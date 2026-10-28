@@ -6,6 +6,16 @@ export function fail(message: string, path: string): never {
   throw new ValidationError(message, path);
 }
 
+/** Fail-closed bound check: a NaN or non-numeric limit counts as exceeded. */
+export function withinLimit(value: number, max: number): boolean {
+  return value <= max;
+}
+
+/** Throws LimitExceededError unless `value <= max` holds (so NaN limits never disable the check). */
+export function enforceLimit(limit: string, value: number, max: number, path: string): void {
+  if (!withinLimit(value, max)) throw new LimitExceededError(limit, path);
+}
+
 /** Appends a key or array index to a dotted key path. */
 export function join(path: string, key: string | number): string {
   const segment = String(key);
@@ -48,7 +58,7 @@ export function readObject(value: unknown, path: string, what = "an object"): Ma
 export function readArray(value: unknown, path: string, max?: { limit: string; value: number }): unknown[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) return fail("Expected an array", path);
   const length = value.length;
-  if (max !== undefined && length > max.value) throw new LimitExceededError(max.limit, path);
+  if (max !== undefined) enforceLimit(max.limit, length, max.value, path);
   const out: unknown[] = [];
   for (let i = 0; i < length; i++) out.push(ownValue(value, String(i), join(path, i)));
   return out;

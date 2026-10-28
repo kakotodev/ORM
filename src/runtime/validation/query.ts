@@ -1,7 +1,7 @@
 import { LimitExceededError } from "../../errors.js";
 import type { ModelIndex } from "../../schema/ir.js";
 import { type Ctx, model, parseWhere } from "./filters.js";
-import { fail, join, oneOrMany, readObject } from "./plain.js";
+import { enforceLimit, fail, join, oneOrMany, readObject, withinLimit } from "./plain.js";
 import type { IncludeNode, OrderByItem } from "./types.js";
 
 const MAX_SKIP = 1_000_000;
@@ -21,8 +21,10 @@ export function parseSelect(target: ModelIndex, value: unknown, path: string): s
   return fields;
 }
 
-export function parseOrderBy(target: ModelIndex, value: unknown, path: string): OrderByItem[] {
-  return oneOrMany(value, path).map((part) => {
+export function parseOrderBy(ctx: Ctx, target: ModelIndex, value: unknown, path: string): OrderByItem[] {
+  const parts = oneOrMany(value, path);
+  enforceLimit("maxOrderBy", parts.length, ctx.limits.maxOrderBy, path);
+  return parts.map((part) => {
     const entries = readObject(part.value, part.path);
     const [entry] = entries;
     if (entries.size !== 1 || entry === undefined) return fail("Each orderBy object must have exactly one key", part.path);
@@ -42,7 +44,7 @@ function boundedInt(value: unknown, path: string, limit: string, max: number): n
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     return fail("Expected a non-negative integer", path);
   }
-  if (value > max) throw new LimitExceededError(limit, path);
+  if (!withinLimit(value, max)) throw new LimitExceededError(limit, path);
   return value;
 }
 
@@ -57,7 +59,9 @@ export function parseSkip(value: unknown, path: string): number {
 /** `depth` is the level of the relations listed in this object (top-level include is 1). */
 export function parseInclude(ctx: Ctx, target: ModelIndex, value: unknown, path: string, depth: number): IncludeNode[] {
   const entries = readObject(value, path);
-  if (entries.size > 0 && depth > ctx.limits.maxIncludeDepth) throw new LimitExceededError("maxIncludeDepth", path);
+  if (entries.size > 0 && !withinLimit(depth, ctx.limits.maxIncludeDepth)) {
+    throw new LimitExceededError("maxIncludeDepth", path);
+  }
   const nodes: IncludeNode[] = [];
   for (const [key, spec] of entries) {
     const keyPath = join(path, key);
@@ -78,7 +82,7 @@ export function parseInclude(ctx: Ctx, target: ModelIndex, value: unknown, path:
     if (options.has("select") && options.has("include")) fail("select and include cannot be used together", keyPath);
     const node: IncludeNode = { relation: key, orderBy: [], include: [] };
     if (options.has("where")) node.where = parseWhere(ctx, related, options.get("where"), join(keyPath, "where"), 0);
-    if (options.has("orderBy")) node.orderBy = parseOrderBy(related, options.get("orderBy"), join(keyPath, "orderBy"));
+    if (options.has("orderBy")) node.orderBy = parseOrderBy(ctx, related, options.get("orderBy"), join(keyPath, "orderBy"));
     if (options.has("select")) node.select = parseSelect(related, options.get("select"), join(keyPath, "select"));
     if (options.has("include")) {
       node.include = parseInclude(ctx, related, options.get("include"), join(keyPath, "include"), depth + 1);

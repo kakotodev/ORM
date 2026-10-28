@@ -49,7 +49,7 @@ function shape(ctx: Ctx, target: ReturnType<typeof model>, args: Args): { select
 function find(ctx: Ctx, target: ReturnType<typeof model>, args: Args): ValidatedFind {
   const out: ValidatedFind = { ...shape(ctx, target, args), orderBy: [] };
   if (args.has("where")) out.where = parseWhere(ctx, target, args.get("where"), "where", 0);
-  if (args.has("orderBy")) out.orderBy = parseOrderBy(target, args.get("orderBy"), "orderBy");
+  if (args.has("orderBy")) out.orderBy = parseOrderBy(ctx, target, args.get("orderBy"), "orderBy");
   if (args.has("take")) out.take = parseTake(ctx, args.get("take"), "take");
   if (args.has("skip")) out.skip = parseSkip(args.get("skip"), "skip");
   return out;
@@ -81,7 +81,7 @@ export function validateArgs(
   args: unknown,
   limits: RuntimeLimits,
 ): ValidatedArgs {
-  const ctx: Ctx = { index, limits };
+  const ctx: Ctx = { index, limits, whereTerms: 0 };
   const target = model(ctx, modelName);
   const allowed = OPTIONS.get(op) ?? fail("Unknown operation", "");
   const entries = readObject(args, "", "an arguments object");

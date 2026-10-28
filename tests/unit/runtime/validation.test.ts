@@ -1,5 +1,5 @@
-import { LimitExceededError, ValidationError } from "../../../src/errors.js";
-import { DEFAULT_RUNTIME_LIMITS } from "../../../src/runtime/limits.js";
+import { ConfigError, LimitExceededError, ValidationError } from "../../../src/errors.js";
+import { DEFAULT_RUNTIME_LIMITS, resolveRuntimeLimits, type RuntimeLimits } from "../../../src/runtime/limits.js";
 import { validateArgs, validateScalar, type Operation, type ValidatedArgs, type ValidatedFind } from "../../../src/runtime/validation.js";
 import { loadSchema } from "../../../src/schema/index.js";
 import { indexSchema, type FieldIR } from "../../../src/schema/ir.js";
@@ -313,5 +313,93 @@ describe("validateScalar", () => {
     expect(validateScalar(idx, field("Post", "cover"), bytes, "x", L)).not.toBe(bytes);
     expect(validateScalar(idx, field("Post", "rating"), null, "x", L)).toBeNull();
     rejection(() => validateScalar(idx, field("Post", "views"), 2.5, "x", L));
+  });
+});
+
+describe("review fixes", () => {
+  it("brand-checks Dates instead of trusting their methods", () => {
+    const createdAt = field("User", "createdAt");
+    const forged = Object.create(Date.prototype) as Record<string, unknown>;
+    forged.getTime = () => 0;
+    forged.getUTCFullYear = () => 2000;
+    rejection(() => validateScalar(idx, createdAt, forged, "x", L));
+    class LyingDate extends Date {
+      override getUTCFullYear(): number {
+        return 2000;
+      }
+    }
+    rejection(() => validateScalar(idx, createdAt, new LyingDate("+010000-01-01T00:00:00Z"), "x", L));
+    const ok = validateScalar(idx, createdAt, new LyingDate("2020-01-01T00:00:00Z"), "x", L);
+    expect(Object.getPrototypeOf(ok)).toBe(Date.prototype);
+  });
+  it("brand-checks Bytes without running caller iterators", () => {
+    const cover = field("Post", "cover");
+    const forged = Object.create(Uint8Array.prototype) as Record<string | symbol, unknown>;
+    let ran = false;
+    Object.defineProperty(forged, "byteLength", { value: 1 });
+    Object.defineProperty(forged, "length", { value: 1 });
+    forged[Symbol.iterator] = function* () {
+      ran = true;
+      yield 1;
+    };
+    rejection(() => validateScalar(idx, cover, forged, "x", L));
+    rejection(() => validateScalar(idx, cover, new Uint16Array([1]), "x", L));
+    expect(ran).toBe(false);
+    const out = validateScalar(idx, cover, Buffer.from([1, 2]), "x", L);
+    expect(Object.getPrototypeOf(out)).toBe(Uint8Array.prototype);
+    expect(Array.from(out as Uint8Array)).toEqual([1, 2]);
+  });
+  it("accepts a single-column @@unique as a unique criterion", () => {
+    const sidx = indexSchema(loadSchema(minimalSchema("model M {\n id Int @id\n a String\n @@unique([a])\n}")));
+    expect(findOf(validateArgs(sidx, "M", "findUnique", { where: { a: "x" } }, L)).where).toEqual({
+      kind: "field", field: "a", op: "equals", value: "x",
+    });
+  });
+  it("fails closed on NaN or missing limits", () => {
+    const broken = (patch: Record<string, unknown>) => ({ ...L, ...patch });
+    expect(() => validateArgs(idx, "User", "findMany", { take: 1e9 }, broken({ maxTake: Number.NaN })))
+      .toThrow(LimitExceededError);
+    expect(() => validateArgs(idx, "User", "findMany", { where: { id: 1 } }, broken({ maxWhereDepth: undefined })))
+      .toThrow(LimitExceededError);
+    expect(() => validateArgs(idx, "User", "findMany", { where: { email: "a" } }, broken({ maxStringLength: Number.NaN })))
+      .toThrow(ValidationError);
+  });
+  it("resolves runtime limit overrides", () => {
+    expect(resolveRuntimeLimits()).toEqual(DEFAULT_RUNTIME_LIMITS);
+    expect(resolveRuntimeLimits({ maxTake: 50, maxRows: undefined })).toEqual({ ...DEFAULT_RUNTIME_LIMITS, maxTake: 50 });
+    for (const bad of [Number.NaN, Infinity, 0, -1, 1.5, "10"]) {
+      expect(() => resolveRuntimeLimits({ maxTake: bad as number })).toThrow(ConfigError);
+    }
+    expect(() => resolveRuntimeLimits({ maxBogus: 1 } as Partial<RuntimeLimits>)).toThrow(ConfigError);
+    expect(DEFAULT_RUNTIME_LIMITS).toMatchObject({ maxWhereTerms: 5000, maxOrderBy: 16 });
+  });
+  it("caps where terms across the whole call", () => {
+    const list = Array.from({ length: 1000 }, (_, i) => i);
+    const or = Array.from({ length: 6 }, () => ({ id: { in: list } }));
+    expect(() => v("findMany", { where: { OR: or } })).toThrow(LimitExceededError);
+    expect(() => v("findMany", { where: { OR: or.slice(0, 5) } })).not.toThrow();
+    expect(() => v("findMany", { where: { OR: or.slice(0, 3) }, include: { posts: { where: { OR: [
+      { id: { in: list } }, { id: { in: list } }, { id: 1 },
+    ] } } } })).toThrow(LimitExceededError);
+    const many = Array.from({ length: 5001 }, (_, i) => ({ id: i }));
+    try {
+      v("findMany", { where: { OR: many } });
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(LimitExceededError);
+      expect((e as LimitExceededError).limit).toBe("maxWhereTerms");
+    }
+  });
+  it("caps orderBy entries", () => {
+    const sixteen = Array.from({ length: 16 }, () => ({ id: "asc" }));
+    expect(() => v("findMany", { orderBy: sixteen })).not.toThrow();
+    expect(() => v("findMany", { orderBy: [...sixteen, { id: "asc" }] })).toThrow(LimitExceededError);
+    expect(() => v("findMany", { include: { posts: { orderBy: [...sixteen, { id: "asc" }] } } })).toThrow(LimitExceededError);
+  });
+  it("caps the serialized size of Json values", () => {
+    const meta = field("Post", "meta");
+    const small = { ...L, maxStringLength: 20 };
+    expect(() => validateScalar(idx, meta, ["aaaaaaaaaa", "bbbbbbbbbb"], "x", small)).toThrow(LimitExceededError);
+    expect(validateScalar(idx, meta, ["a"], "x", small)).toEqual(["a"]);
   });
 });

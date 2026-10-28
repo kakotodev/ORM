@@ -2,12 +2,19 @@ import { LimitExceededError } from "../../errors.js";
 import type { EnumField, ModelIndex, RelationField, ScalarField, SchemaIndex } from "../../schema/ir.js";
 import type { RuntimeLimits } from "../limits.js";
 import { validateScalar } from "./scalars.js";
-import { fail, isPlainObject, join, oneOrMany, readArray, readObject } from "./plain.js";
+import { enforceLimit, fail, isPlainObject, join, oneOrMany, readArray, readObject, withinLimit } from "./plain.js";
 import type { FilterNode, ScalarOp } from "./types.js";
 
 export interface Ctx {
   index: SchemaIndex;
   limits: RuntimeLimits;
+  /** Running total of where terms for the whole call (see `maxWhereTerms`). */
+  whereTerms: number;
+}
+
+function countTerms(ctx: Ctx, terms: number, path: string): void {
+  ctx.whereTerms += terms;
+  enforceLimit("maxWhereTerms", ctx.whereTerms, ctx.limits.maxWhereTerms, path);
 }
 
 const SCALAR_OPS: ReadonlySet<string> = new Set<ScalarOp>([
@@ -52,6 +59,7 @@ function operand(ctx: Ctx, field: ScalarField | EnumField, value: unknown, path:
 function scalarFilter(ctx: Ctx, field: ScalarField | EnumField, value: unknown, path: string): FilterNode {
   if (field.kind === "scalar" && field.type === "Json") return fail("Json fields cannot be filtered", path);
   if (!isPlainObject(value)) {
+    countTerms(ctx, 1, path);
     const direct = value === null ? null : operand(ctx, field, value, path);
     return { kind: "field", field: field.name, op: "equals", value: direct };
   }
@@ -67,10 +75,13 @@ function scalarFilter(ctx: Ctx, field: ScalarField | EnumField, value: unknown, 
     let normalized: unknown;
     if (op === "in" || op === "notIn") {
       const list = readArray(operandValue, opPath, { limit: "maxInListSize", value: ctx.limits.maxInListSize });
+      countTerms(ctx, Math.max(1, list.length), opPath);
       normalized = list.map((item, i) => operand(ctx, field, item, join(opPath, i)));
     } else if ((op === "equals" || op === "not") && operandValue === null) {
+      countTerms(ctx, 1, opPath);
       normalized = null;
     } else {
+      countTerms(ctx, 1, opPath);
       normalized = operand(ctx, field, operandValue, opPath);
     }
     items.push({ kind: "field", field: field.name, op, value: normalized });
@@ -108,7 +119,7 @@ function relationFilter(
  * (top-level 0; each AND / OR / NOT / relation filter adds one).
  */
 export function parseWhere(ctx: Ctx, target: ModelIndex, value: unknown, path: string, depth: number): FilterNode {
-  if (depth > ctx.limits.maxWhereDepth) throw new LimitExceededError("maxWhereDepth", path);
+  if (!withinLimit(depth, ctx.limits.maxWhereDepth)) throw new LimitExceededError("maxWhereDepth", path);
   const entries = readObject(value, path);
   const items: FilterNode[] = [];
   for (const [key, entry] of entries) {
@@ -138,6 +149,7 @@ function uniqueValue(ctx: Ctx, target: ModelIndex, name: string, value: unknown,
   if (field === undefined || field.kind === "relation") return fail("Unknown field", path);
   if (value === null) return fail("Unique criterion must not be null", path);
   if (isPlainObject(value)) return fail("Unique criterion must be a direct value", path);
+  countTerms(ctx, 1, path);
   return { kind: "field", field: name, op: "equals", value: validateScalar(ctx.index, field, value, path, ctx.limits) };
 }
 
@@ -153,7 +165,8 @@ export function parseUniqueWhere(ctx: Ctx, target: ModelIndex, value: unknown, p
   const keyPath = join(path, key);
   const field = target.fields.get(key);
   if (field !== undefined) {
-    const unique = field.kind !== "relation" && (target.ir.primaryKey === key || field.isUnique);
+    const singleUnique = target.ir.uniques.some((names) => names.length === 1 && names[0] === key);
+    const unique = field.kind !== "relation" && (target.ir.primaryKey === key || field.isUnique || singleUnique);
     if (!unique) return fail("Field is not a unique criterion", keyPath);
     return uniqueValue(ctx, target, key, criterion, keyPath);
   }

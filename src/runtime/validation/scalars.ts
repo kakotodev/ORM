@@ -1,6 +1,6 @@
 import type { FieldIR, SchemaIndex } from "../../schema/ir.js";
 import type { RuntimeLimits } from "../limits.js";
-import { fail, isPlainObject, join, readArray, readObject } from "./plain.js";
+import { enforceLimit, fail, isPlainObject, join, readArray, readObject, withinLimit } from "./plain.js";
 
 // Bounded, unambiguous quantifiers: linear-time matching.
 // eslint-disable-next-line security/detect-unsafe-regex
@@ -8,6 +8,15 @@ const DECIMAL = /^-?\d{1,65}(\.\d{1,30})?$/;
 const MAX_JSON_DEPTH = 32;
 const INT64_MIN = -(2n ** 63n);
 const INT64_MAX = 2n ** 63n - 1n;
+
+// Built-ins captured at load time and applied with `.call`, so brand checks never run caller-defined methods.
+/* eslint-disable @typescript-eslint/unbound-method */
+const dateGetTime = Date.prototype.getTime;
+const typedArrayProto = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const typedArrayByteLength = Object.getOwnPropertyDescriptor(typedArrayProto, "byteLength")?.get;
+const typedArrayTag = Object.getOwnPropertyDescriptor(typedArrayProto, Symbol.toStringTag)?.get;
+const uint8Set = Uint8Array.prototype.set;
+/* eslint-enable @typescript-eslint/unbound-method */
 
 /** Runs a native accessor that throws on objects merely inheriting from the built-in prototype. */
 function native<T>(read: () => T, message: string, path: string): T {
@@ -20,7 +29,7 @@ function native<T>(read: () => T, message: string, path: string): T {
 
 function checkString(value: string, path: string, limits: RuntimeLimits): string {
   if (value.includes("\0")) fail("Strings must not contain NUL characters", path);
-  if (value.length > limits.maxStringLength) fail("String is too long", path);
+  if (!withinLimit(value.length, limits.maxStringLength)) fail("String is too long", path);
   return value;
 }
 
@@ -43,6 +52,32 @@ function copyJson(value: unknown, path: string, limits: RuntimeLimits, depth: nu
     out.push([key, copyJson(item, keyPath, limits, depth + 1)]);
   }
   return Object.fromEntries(out); // own data properties only, never a prototype setter
+}
+
+/** Brand-checks a real Date through the built-in getter (subclass overrides are ignored) and copies it. */
+function copyDate(value: unknown, path: string): Date {
+  const time = native(() => dateGetTime.call(value as Date), "Expected a Date", path);
+  if (!Number.isFinite(time)) return fail("Invalid Date", path);
+  const copy = new Date(time);
+  const year = copy.getUTCFullYear();
+  if (year < 1 || year > 9999) return fail("Date year must be between 1 and 9999", path);
+  return copy;
+}
+
+/**
+ * Brand-checks a real Uint8Array through the built-in TypedArray getters and copies its bytes with the
+ * built-in `set` (typed-array source: no iterator, species or getter of the caller is consulted).
+ */
+function copyBytes(value: unknown, path: string): Uint8Array {
+  if (typedArrayByteLength === undefined || typedArrayTag === undefined) return fail("Expected a Uint8Array", path);
+  const tag: unknown = typedArrayTag.call(value);
+  if (tag !== "Uint8Array") return fail("Expected a Uint8Array", path);
+  const length = native(() => typedArrayByteLength.call(value) as number, "Expected a Uint8Array", path);
+  const copy = new Uint8Array(length);
+  native(() => {
+    uint8Set.call(copy, value as Uint8Array);
+  }, "Expected a Uint8Array", path);
+  return copy;
 }
 
 /**
@@ -78,19 +113,14 @@ export function validateScalar(
       return typeof value === "string" ? checkString(value, path, limits) : fail("Expected a string", path);
     case "Boolean":
       return typeof value === "boolean" ? value : fail("Expected a boolean", path);
-    case "DateTime": {
-      if (!(value instanceof Date)) return fail("Expected a Date", path);
-      const time = native(() => value.getTime(), "Expected a Date", path);
-      if (Number.isNaN(time)) return fail("Invalid Date", path);
-      const year = value.getUTCFullYear();
-      if (year < 1 || year > 9999) return fail("Date year must be between 1 and 9999", path);
-      return new Date(time);
+    case "DateTime":
+      return copyDate(value, path);
+    case "Json": {
+      const copy = copyJson(value, path, limits, 1);
+      enforceLimit("maxStringLength", JSON.stringify(copy).length, limits.maxStringLength, path);
+      return copy;
     }
-    case "Json":
-      return copyJson(value, path, limits, 1);
     case "Bytes":
-      if (!(value instanceof Uint8Array)) return fail("Expected a Uint8Array", path);
-      native(() => value.byteLength, "Expected a Uint8Array", path);
-      return new Uint8Array(value);
+      return copyBytes(value, path);
   }
 }
