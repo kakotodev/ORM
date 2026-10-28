@@ -25,6 +25,78 @@ const REL =
   "model A { id Int @id\n bs B[] }\nmodel B { id Int @id\n a A @relation(fields: [aId], references: [id])\n aId Int }";
 const OWNER = "model B { id Int @id\n a A @relation(fields: [aId], references: [id])\n aId Int }";
 
+const EXPECTED_MESSAGE = new Map<string, string>(Object.entries({
+ "missing @id": "exactly one @id",
+ "two @id": "found several",
+ "@@id": "@@id",
+ "nullable @id": "cannot be optional",
+ "Float @id": "must be Int, BigInt or String",
+ "enum @id": "not allowed here",
+ "reserved name": "model name: it is reserved",
+ "__proto__ field": "field name: it is reserved",
+ "prototype model": "model name: it is reserved",
+ "_mini_orm prefix": "model name: it is reserved",
+ "identifier too long": "too long",
+ "bad @map ident": "column name: it has invalid",
+ "bad @@map ident": "table name: it has invalid",
+ "reserved delegate": "delegate name: it is reserved",
+ "duplicate model": "Duplicate model",
+ "duplicate delegate": "delegate .* already used",
+ "duplicate table": "Table .* already used",
+ "duplicate field": "Duplicate field",
+ "duplicate enum": "Duplicate enum ",
+ "duplicate enum value": "Duplicate enum value",
+ "empty enum": "at least one value",
+ "enum named like a model": "conflicts with another type",
+ "model named like a scalar": "conflicts with another type",
+ "autoincrement on String": "autoincrement\\(\\) is only",
+ "autoincrement on non-id": "autoincrement\\(\\) is only",
+ "now() on Int": "now\\(\\) is only",
+ "uuid() on Int": "uuid\\(\\) is only",
+ "unknown default function": "Unknown default function",
+ "string default on Int": "does not match",
+ "number default on String": "does not match",
+ "fractional Int default": "safe integer",
+ "unsafe Int default": "safe integer",
+ "unsafe BigInt default": "safe integer",
+ "boolean default on Int": "does not match",
+ "unknown enum default": "not a value of the enum",
+ "Json default": "cannot have a default",
+ "@updatedAt on Int": "only allowed on DateTime",
+ "Json unique": "cannot be unique",
+ "Bytes unique": "cannot be unique",
+ "Json @@index": "cannot be indexed",
+ "Json id": "must be Int, BigInt or String",
+ "list of scalars": "Only relation fields can be lists",
+ "unknown type": "Unknown type",
+ "unknown attribute": "not allowed here",
+ "unknown block attribute": "not allowed here",
+ "duplicate attribute": "Duplicate attribute",
+ "unknown field in @@unique": "Unknown scalar field",
+ "relation field in @@index": "Unknown scalar field",
+ "@id on relation": "not allowed here",
+ "relation without back side": "no opposite field",
+ "inverse without owner": "Exactly one side",
+ "both sides owners": "Exactly one side",
+ "two relations between two models": "Only one relation between two",
+ "named relation": "Named relations",
+ "self relation": "Self-relations",
+ "FK type mismatch": "type must match",
+ "FK nullability mismatch": "nullability must match",
+ "FK count mismatch": "same length",
+ "unknown FK field": "Foreign key must be a scalar",
+ "references a non-unique field": "@id or a unique",
+ "missing relation arguments": "requires fields and references",
+ "SetNull on required relation": "SetNull requires an optional",
+ "unknown onDelete": "onDelete must be",
+ "onDelete on inverse side": "onDelete is only allowed on the side",
+ "list owner": "cannot be a list",
+ "1:1 inverse without unique FK": "requires a unique foreign key",
+ "required 1:1 inverse": "must be optional",
+ "optional list": "cannot be optional",
+ "duplicate column via @map": "Duplicate column"
+}));
+
 describe("buildSchema / loadSchema", () => {
   it("builds the IR of the blog fixture", () => {
     const ir = loadSchema(BLOG_SCHEMA);
@@ -220,7 +292,7 @@ describe("buildSchema / loadSchema", () => {
     ],
     [
       "missing relation arguments",
-      "model A { id Int @id\n bs B[] }\nmodel B { id Int @id\n a A @relation(onDelete: Cascade) }",
+      "model A { id Int @id\n bs B[] }\nmodel B { id Int @id\n a A @relation(fields: [aId])\n aId Int }",
     ],
     [
       "SetNull on required relation",
@@ -245,8 +317,26 @@ describe("buildSchema / loadSchema", () => {
     ],
     ["optional list", "model A { id Int @id\n bs B[]? }\n" + OWNER],
     ["duplicate column via @map", 'model A { id Int @id\n x Int @map("y")\n y Int }'],
-  ])("rejects %s", (_n, models) => {
+  ])("rejects %s", (name, models) => {
     expect(bad(models)).toThrow(SchemaError);
+    // The pattern comes from the fixed EXPECTED_MESSAGE table above, not user input.
+    // eslint-disable-next-line security/detect-non-literal-regexp
+    const pattern = new RegExp(must(EXPECTED_MESSAGE.get(name)));
+    expect(messages(models).some((m) => pattern.test(m))).toBe(true);
+  });
+
+  it.each([
+    ["models differing by case", "model FOO { id Int @id }\nmodel Foo { id Int @id }"],
+    ["@@map differing by case", 'model Post { id Int @id }\nmodel Other { id Int @id\n @@map("post") }'],
+    ["fields differing by case", "model A { id Int @id\n Email String\n email String }"],
+    ["@map differing by case", 'model A { id Int @id\n x Int @map("Y")\n y Int }'],
+  ])("rejects case-insensitive collision: %s", (_n, models) => {
+    expect(messages(models).some((m) => /already used|Duplicate column/.test(m))).toBe(true);
+  });
+
+  it("keeps the primary key out of uniques", () => {
+    const ir = loadSchema(minimalSchema("model A { id Int @id @unique\n k Int @unique\n @@unique([id]) }"));
+    expect(must(ir.models[0]).uniques).toEqual([["k"]]);
   });
 
   it("rejects a non-finite Float default", () => {

@@ -375,14 +375,14 @@ function buildFields(draft: ModelDraft, ctx: Context): void {
     const field = buildValueField(node, attrs, ctx);
     if (field === undefined) continue;
     if (nameOk) {
-      if (columns.has(field.column)) report(`Duplicate column ${show(field.column)}`, node.pos);
-      columns.add(field.column);
+      if (columns.has(field.column.toLowerCase())) report(`Duplicate column ${show(field.column)}`, node.pos);
+      columns.add(field.column.toLowerCase());
     }
     if (field.kind === "scalar" && field.isId) {
       ids++;
       if (ids === 1) draft.ir.primaryKey = field.name;
     }
-    if (field.isUnique) draft.ir.uniques.push([field.name]);
+    if (field.isUnique && !(field.kind === "scalar" && field.isId)) draft.ir.uniques.push([field.name]);
     draft.fields.set(node.name, field);
     draft.ir.fields.push(field);
   }
@@ -426,7 +426,8 @@ function buildModelAttributes(draft: ModelDraft, ctx: Context): void {
         report("Field list contains duplicates", first.value.pos);
         ok = false;
       }
-      if (ok) (attr.name === "unique" ? draft.ir.uniques : draft.ir.indexes).push(names);
+      const isPrimaryKey = attr.name === "unique" && names.length === 1 && names[0] === draft.ir.primaryKey;
+      if (ok && !isPrimaryKey) (attr.name === "unique" ? draft.ir.uniques : draft.ir.indexes).push(names);
     }
   }
 }
@@ -460,7 +461,11 @@ function resolveOwner(rel: RelationDraft, drafts: ReadonlyMap<string, ModelDraft
     }
   }
   if (fkNames === undefined || refNames === undefined) {
-    if (!attr.args.some((a) => a.name === "fields") || !attr.args.some((a) => a.name === "references")) {
+    const hasFields = attr.args.some((x) => x.name === "fields");
+    const hasRefs = attr.args.some((x) => x.name === "references");
+    if (!hasFields && !hasRefs && onDelete !== undefined) {
+      report("onDelete is only allowed on the side with fields and references", attr.pos);
+    } else if (!hasFields || !hasRefs) {
       report("@relation requires fields and references", attr.pos);
     }
     return;
@@ -607,11 +612,11 @@ export function buildSchema(ast: SchemaAst, file?: string): SchemaIR {
     }
     const delegate = lowerFirst(node.name);
     if (!checkIdentifier(delegate, "model delegate name", node.pos, report)) continue;
-    if (delegates.has(delegate)) {
+    if (delegates.has(delegate.toLowerCase())) {
       report(`Model delegate ${show(delegate)} is already used`, node.pos);
       continue;
     }
-    delegates.add(delegate);
+    delegates.add(delegate.toLowerCase());
     const draft: ModelDraft = {
       node,
       fields: new Map(),
@@ -625,8 +630,8 @@ export function buildSchema(ast: SchemaAst, file?: string): SchemaIR {
   for (const draft of ordered) buildFields(draft, ctx);
   for (const draft of ordered) buildModelAttributes(draft, ctx);
   for (const draft of ordered) {
-    if (tables.has(draft.ir.table)) report(`Table ${show(draft.ir.table)} is already used`, draft.node.pos);
-    tables.add(draft.ir.table);
+    if (tables.has(draft.ir.table.toLowerCase())) report(`Table ${show(draft.ir.table)} is already used`, draft.node.pos);
+    tables.add(draft.ir.table.toLowerCase());
   }
   const relations = ctx.relations;
   for (const rel of relations) {
