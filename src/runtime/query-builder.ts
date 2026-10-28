@@ -5,6 +5,7 @@ import type { FieldIR, ModelIndex, RelationField, SchemaIndex } from "../schema/
 import { oppositeRelation } from "../schema/ir.js";
 import type { RuntimeLimits } from "./limits.js";
 import type { FilterNode, OrderByItem, ValidatedData, ValidatedFind } from "./validation.js";
+import { own } from "../own.js";
 
 export interface BuildContext {
   index: SchemaIndex;
@@ -204,13 +205,15 @@ export function buildFind(
     kind: "select",
     table: target.ir.table,
     alias,
-    columns: selectedColumns(ctx, model, args.select, extraColumns),
+    columns: selectedColumns(ctx, model, own(args, "select"), extraColumns),
     orderBy: orderColumns(target, args.orderBy),
   };
-  if (args.where !== undefined) query.where = buildFilter(ctx, model, alias, args.where);
+  const where = own(args, "where");
+  if (where !== undefined) query.where = buildFilter(ctx, model, alias, where);
   // Unbounded reads fetch one row past maxRows so the client can detect the overflow.
-  query.limit = mode === "many" ? (args.take ?? ctx.limits.maxRows + 1) : 1;
-  if (args.skip !== undefined) query.offset = args.skip;
+  query.limit = mode === "many" ? (own(args, "take") ?? ctx.limits.maxRows + 1) : 1;
+  const skip = own(args, "skip");
+  if (skip !== undefined) query.offset = skip;
   return query;
 }
 
@@ -222,13 +225,14 @@ export function buildCount(ctx: BuildContext, model: string, args: ValidatedFind
   const target = modelOf(ctx, model);
   const alias = ctx.nextAlias();
   const query: SelectQuery = { kind: "select", table: target.ir.table, alias, columns: "count", orderBy: [] };
-  if (args.where !== undefined) query.where = buildFilter(ctx, model, alias, args.where);
+  const where = own(args, "where");
+  if (where !== undefined) query.where = buildFilter(ctx, model, alias, where);
   return query;
 }
 
 /** Applies count's `skip` then `take` window to the unbounded total returned by `buildCount`. */
 export function applyCountWindow(total: number, args: { take?: number; skip?: number }): number {
-  return Math.max(0, Math.min(total - (args.skip ?? 0), args.take ?? Infinity));
+  return Math.max(0, Math.min(total - (own(args, "skip") ?? 0), own(args, "take") ?? Infinity));
 }
 
 // ------------------------------------------------------------------ writes

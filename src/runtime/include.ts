@@ -5,6 +5,7 @@ import { oppositeRelation } from "../schema/ir.js";
 import { buildContext, type Engine, fetchRows, modelOf, project, type Row, scalarNames, union } from "./client/engine.js";
 import { buildFind } from "./query-builder.js";
 import type { FilterNode, IncludeNode } from "./validation.js";
+import { own } from "../own.js";
 
 /** How parent rows match related rows: `parentFields[i]` on the parent equals `childFields[i]` on the child. */
 interface Link {
@@ -35,7 +36,7 @@ export function joinFields(engine: Engine, model: ModelIndex, include: readonly 
 
 /** The fields to read for a shape: selected (or all scalar) fields plus the join fields of its includes. */
 export function shapeFields(engine: Engine, model: ModelIndex, shape: { select?: string[]; include: IncludeNode[] }): string[] {
-  return union(shape.select ?? scalarNames(model), joinFields(engine, model, shape.include));
+  return union(own(shape, "select") ?? scalarNames(model), joinFields(engine, model, shape.include));
 }
 
 /** Loads the includes onto rows read with `shapeFields`, then drops the helper columns. */
@@ -47,7 +48,7 @@ export async function shapeRows(
   shape: { select?: string[]; include: IncludeNode[] },
 ): Promise<Row[]> {
   await loadIncludes(engine, q, model, rows, shape.include);
-  const fields = shape.select ?? scalarNames(model);
+  const fields = own(shape, "select") ?? scalarNames(model);
   return rows.map((row) => project(row, fields, shape.include));
 }
 
@@ -96,14 +97,15 @@ async function loadRelation(engine: Engine, q: Queryable, parent: ModelIndex, ro
   const children: Row[] = [];
   for (let i = 0; i < tuples.length; i += batchSize) {
     const byKey = keyFilter(link.childFields, tuples.slice(i, i + batchSize));
-    const where: FilterNode = node.where === undefined ? byKey : { kind: "and", items: [byKey, node.where] };
+    const nodeWhere = own(node, "where");
+    const where: FilterNode = nodeWhere === undefined ? byKey : { kind: "and", items: [byKey, nodeWhere] };
     const query = buildFind(buildContext(engine), link.child.ir.name, { where, select: fields, include: [], orderBy: node.orderBy }, "many");
     children.push(...(await fetchRows(engine, q, query, link.child, fields)));
     if (children.length > engine.limits.maxRows) throw new LimitExceededError("maxRows", `include.${node.relation}`);
   }
 
   await loadIncludes(engine, q, link.child, children, node.include);
-  const selected = node.select ?? scalarNames(link.child);
+  const selected = own(node, "select") ?? scalarNames(link.child);
   const groups = new Map<string, Row[]>();
   for (const child of children) {
     const key = keyOf(child, link.childFields);

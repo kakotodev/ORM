@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { OrmError } from "../errors.js";
+import { own } from "../own.js";
 import type { EnumField, FieldIR, ModelIndex, RelationField, ScalarField, ScalarType, SchemaIndex } from "../schema/ir.js";
 import type { Dialect } from "./dialect.js";
 import type { CompiledQuery, ReturningColumn, SelectQuery, SqlExpr, SqlQuery, SqlValue } from "./sql-ast.js";
@@ -54,15 +55,17 @@ class Compiler {
     else if (q.columns.length === 0) columns = "1";
     else columns = q.columns.map((c) => `${alias}.${quoteIdentifier(c.column)} AS ${quoteIdentifier(c.as)}`).join(", ");
     let text = `SELECT ${columns} FROM ${quoteIdentifier(q.table)} AS ${alias}`;
-    text += this.where(q.where);
+    text += this.where(own(q, "where"));
     if (q.orderBy.length > 0) {
       // Direction is re-derived from a literal so no caller-supplied string reaches the text.
       const items = q.orderBy.map((o) => `${alias}.${quoteIdentifier(o.column)} ${o.direction === "DESC" ? "DESC" : "ASC"}`);
       text += ` ORDER BY ${items.join(", ")}`;
     }
-    if (q.limit !== undefined) text += ` LIMIT ${this.param(q.limit)}`;
-    else if (q.offset !== undefined) text += " LIMIT -1"; // SQLite requires LIMIT before OFFSET
-    if (q.offset !== undefined) text += ` OFFSET ${this.param(q.offset)}`;
+    const limit = own(q, "limit");
+    const offset = own(q, "offset");
+    if (limit !== undefined) text += ` LIMIT ${this.param(limit)}`;
+    else if (offset !== undefined) text += " LIMIT -1"; // SQLite requires LIMIT before OFFSET
+    if (offset !== undefined) text += ` OFFSET ${this.param(offset)}`;
     return text;
   }
 
@@ -97,12 +100,12 @@ class Compiler {
     if (q.set.length === 0) return fail("Update needs at least one column");
     const head = `UPDATE ${quoteIdentifier(q.table)} AS ${quoteIdentifier(q.alias)}`;
     const set = q.set.map((s) => `${quoteIdentifier(s.column)} = ${this.param(s.value)}`).join(", ");
-    return `${head} SET ${set}${this.where(q.where)}${this.returning(q.returning)}`;
+    return `${head} SET ${set}${this.where(own(q, "where"))}${this.returning(q.returning)}`;
   }
 
   delete(q: Extract<SqlQuery, { kind: "delete" }>): string {
     const head = `DELETE FROM ${quoteIdentifier(q.table)} AS ${quoteIdentifier(q.alias)}`;
-    return `${head}${this.where(q.where)}${this.returning(q.returning)}`;
+    return `${head}${this.where(own(q, "where"))}${this.returning(q.returning)}`;
   }
 
   /** `nested` is true when the expression sits inside another one (groups then need parentheses). */
