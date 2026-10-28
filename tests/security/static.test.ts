@@ -39,7 +39,9 @@ describe("dynamic code", () => {
       const setting = config.rules[rule] as unknown[];
       expect(setting[0], rule).toBe(2); // "error"
     }
-  });
+    // Loading the ESLint config (typescript-eslint + plugins) can take several seconds
+    // when the whole suite runs in parallel, so this test gets its own timeout.
+  }, 30_000);
 });
 
 describe("supply chain", () => {
