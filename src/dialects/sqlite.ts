@@ -118,7 +118,12 @@ class Compiler {
         return `${left} ${e.op} ${this.expr(e.right, true)}`;
       }
       case "isNull":
-        return `${this.expr(e.expr, true)} IS ${e.negated ? "NOT " : ""}NULL`;
+      {
+        // Anything but a bare column / parameter is parenthesised so IS binds to the whole expression.
+        const inner = this.expr(e.expr, true);
+        const target = e.expr.kind === "column" || e.expr.kind === "param" ? inner : `(${inner})`;
+        return `${target} IS ${e.negated ? "NOT " : ""}NULL`;
+      }
       case "in": {
         if (e.values.length === 0) return e.negated ? "1" : "0";
         const target = this.expr(e.expr, true);

@@ -1,6 +1,6 @@
 import { sqliteDialect } from "../../../src/dialects/sqlite.js";
 import { DEFAULT_RUNTIME_LIMITS } from "../../../src/runtime/limits.js";
-import { buildCount, selectedColumns } from "../../../src/runtime/query-builder.js";
+import { applyCountWindow, buildCount, selectedColumns } from "../../../src/runtime/query-builder.js";
 import { compileFind, ctx } from "../../helpers/builder.js";
 
 describe("read query builder", () => {
@@ -29,7 +29,7 @@ describe("read query builder", () => {
     const q = compileFind("User", { where: { posts: { some: { published: true } } } }, "many");
     expect(q.text).toContain('EXISTS (SELECT 1 FROM "Post" AS "t1" WHERE "t1"."authorId" = "t0"."id" AND "t1"."published" = ?)');
     expect(compileFind("User", { where: { posts: { every: { published: true } } } }, "many").text).toContain(
-      'NOT EXISTS (SELECT 1 FROM "Post" AS "t1" WHERE "t1"."authorId" = "t0"."id" AND NOT ("t1"."published" = ?))',
+      'NOT EXISTS (SELECT 1 FROM "Post" AS "t1" WHERE "t1"."authorId" = "t0"."id" AND (NOT ("t1"."published" = ?) OR ("t1"."published" = ?) IS NULL))',
     );
     expect(compileFind("User", { where: { posts: { none: {} } } }, "many").text).toContain(
       'NOT EXISTS (SELECT 1 FROM "Post" AS "t1" WHERE "t1"."authorId" = "t0"."id")',
@@ -45,8 +45,31 @@ describe("read query builder", () => {
 
   it("uses a fresh alias for every nested subquery", () => {
     const q = compileFind("User", { where: { posts: { some: { author: { is: { email: "a" } } } } } }, "many");
-    expect(q.text).toContain('"t1"');
-    expect(q.text).toContain('"t2"');
+    expect(q.text).toContain(
+      'EXISTS (SELECT 1 FROM "Post" AS "t1" WHERE "t1"."authorId" = "t0"."id" AND EXISTS (SELECT 1 FROM "User" AS "t2" WHERE "t2"."id" = "t1"."authorId" AND "t2"."email" = ?))',
+    );
+  });
+
+  it("keeps every NULL-safe for nullable fields and always true when empty", () => {
+    expect(compileFind("User", { where: { posts: { every: { rating: "1" } } } }, "many").text).toContain(
+      'AND (NOT ("t1"."rating" = ?) OR ("t1"."rating" = ?) IS NULL))',
+    );
+    expect(compileFind("User", { where: { posts: { every: {} } } }, "many").text).toContain(
+      'NOT EXISTS (SELECT 1 FROM "Post" AS "t1" WHERE "t1"."authorId" = "t0"."id" AND 0)',
+    );
+  });
+
+  it("orders params in text order across scalars and subqueries", () => {
+    const q = compileFind("User", { where: { id: 1, posts: { some: { published: true } }, name: "x" } }, "many");
+    expect(q.params).toEqual([1, 1, "x", DEFAULT_RUNTIME_LIMITS.maxRows + 1]);
+  });
+
+  it("applies the count window", () => {
+    expect(applyCountWindow(10, { take: 3 })).toBe(3);
+    expect(applyCountWindow(10, { skip: 4 })).toBe(6);
+    expect(applyCountWindow(10, { take: 5, skip: 8 })).toBe(2);
+    expect(applyCountWindow(10, { skip: 20, take: 5 })).toBe(0);
+    expect(applyCountWindow(10, {})).toBe(10);
   });
 
   it("treats not on a nullable column like Prisma", () => {

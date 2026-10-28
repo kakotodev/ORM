@@ -136,8 +136,14 @@ function relationFilter(
     const inner = buildFilter(ctx, child.ir.name, childAlias, filter);
     // An empty AND is "true": it adds nothing to some / none / is / isNot.
     const trivial = inner.kind === "and" && inner.items.length === 0;
-    if (op === "every") items.push({ kind: "not", expr: inner });
-    else if (!trivial) items.push(inner);
+    if (op === "every") {
+      // A child violates `every` when the filter is false or NULL (three-valued logic); an empty filter never is.
+      items.push(
+        trivial
+          ? { kind: "false" }
+          : { kind: "or", items: [{ kind: "not", expr: inner }, { kind: "isNull", expr: inner, negated: false }] },
+      );
+    } else if (!trivial) items.push(inner);
   }
   const negated = op === "none" || op === "every" || op === "isNot" || (filter === null && op === "is");
   return { kind: "exists", query: existsQuery(child, childAlias, { kind: "and", items }), negated };
@@ -208,11 +214,19 @@ export function buildFind(
   return query;
 }
 
-/** `take` / `skip` / `orderBy` are not applied: the AST has no sub-select to bound a COUNT with. */
+/**
+ * Plain `COUNT(*)` over the filter. `take` / `skip` / `orderBy` are deliberately not applied (the AST has no
+ * sub-select to bound a COUNT): the client passes the result through `applyCountWindow`.
+ */
 export function buildCount(ctx: BuildContext, model: string, args: ValidatedFind): SelectQuery {
   const target = modelOf(ctx, model);
   const alias = ctx.nextAlias();
   const query: SelectQuery = { kind: "select", table: target.ir.table, alias, columns: "count", orderBy: [] };
   if (args.where !== undefined) query.where = buildFilter(ctx, model, alias, args.where);
   return query;
+}
+
+/** Applies count's `skip` then `take` window to the unbounded total returned by `buildCount`. */
+export function applyCountWindow(total: number, args: { take?: number; skip?: number }): number {
+  return Math.max(0, Math.min(total - (args.skip ?? 0), args.take ?? Infinity));
 }
