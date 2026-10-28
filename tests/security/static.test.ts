@@ -59,6 +59,7 @@ describe("supply chain", () => {
   it("audits dependencies in CI and updates them with Dependabot", () => {
     const ci = readFileSync(join(root, ".github", "workflows", "ci.yml"), "utf8");
     expect(ci).toContain("npm audit --audit-level=high");
+    expect(ci).toContain('- cron: "0 6 * * 1"');
     expect(readFileSync(join(root, ".github", "dependabot.yml"), "utf8")).toContain("package-ecosystem: npm");
   });
 });

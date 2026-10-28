@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly run so `npm audit` catches newly published advisories without a push.
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read

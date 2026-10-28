@@ -115,6 +115,9 @@ Options: --debug, --help, --version
 
 `updateMany` and `deleteMany` require a `where` key (pass `{}` to target every row).
 
+`{ field: { not: v } }`, `NOT: { field: v }` and `notIn` exclude rows where the field is NULL (as in SQL and Prisma).
+To include them, add `OR: [{ field: null }]`.
+
 ### Type mapping
 
 | Schema type | TypeScript type | SQLite storage |
@@ -122,7 +125,7 @@ Options: --debug, --help, --version
 | `Int` | `number` | INTEGER |
 | `BigInt` | `bigint` | INTEGER |
 | `Float` | `number` | REAL |
-| `Decimal` | `string` | TEXT |
+| `Decimal` | `string` | TEXT (equality is textual: `"1.0"` and `"1.00"` differ) |
 | `String` | `string` | TEXT |
 | `Boolean` | `boolean` | INTEGER (0/1) |
 | `DateTime` | `Date` | TEXT (ISO 8601) |
@@ -168,6 +171,8 @@ invalid value such as `NaN`, `0` or a negative number throws instead of disablin
 | `maxWhereTerms` | 5000 | Field conditions in one call |
 | `maxOrderBy` | 16 | `orderBy` entries per query or include |
 
+`skip` has a fixed cap of 1,000,000 that is not configurable.
+
 ```ts
 const db = createClient({ limits: { maxTake: 100, maxRows: 500 } });
 ```
@@ -178,14 +183,17 @@ nesting depth 16).
 ## Known limitations
 
 - Interactive transactions time out after 5 s by default; change it with `createClient({ transactionTimeoutMs })`.
-  Inside `$transaction` you must use the `tx` client, not `db`.
+  Inside `$transaction` you must use the `tx` client, not `db`. After a timeout the transaction is rolled back, but the
+  callback itself keeps running: side effects outside the database are not cancelled. A synchronous busy loop in the
+  callback also delays the timeout, since the timer only fires once the event loop is free.
 - `every` is NULL-safe, which differs from Prisma when the related column contains NULLs.
 - Text filters (`contains`, `startsWith`, `endsWith`) are case-sensitive.
 - When `select` / `include` arguments are a widened variable (not a literal), result types widen to the full model.
 - `undefined` in arguments is rejected at runtime, even where the types allow optional properties.
 - With `--debug`, CLI errors may print driver messages that include file paths.
-- Migrations are additive-only (new tables, columns and indexes). In development, use
-  `mini-orm migrate reset --force` to start over.
+- Migrations are additive-only: only new models (with their indexes and foreign keys) are applied. Any change to an
+  existing model, including a new column, is refused. In development, use `mini-orm migrate reset --force` to start
+  over.
 
 ### Out of scope
 
