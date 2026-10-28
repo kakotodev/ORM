@@ -27,7 +27,8 @@
     "test:unit": "vitest run tests/unit tests/security tests/fuzz",
     "test:integration": "vitest run tests/integration",
     "test:types": "vitest run --typecheck.only --passWithNoTests",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "fixtures:update": "tsx scripts/update-fixtures.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

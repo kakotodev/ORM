@@ -16,3 +16,6 @@ export type {
   ScalarType,
   SchemaIR,
 } from "./schema/ir.js";
+export { generateClient } from "./generator/client.js";
+export type { GenerateOptions, GeneratedClient } from "./generator/client.js";
+export type * from "./runtime/types.js";
