@@ -2,7 +2,7 @@
    Paths are built with `join(dir, name)`, where `name` comes only from `migrationName` or from a
    directory entry that matched MIGRATION_FILE; the directory is chosen by the developer. */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MigrationError } from "../errors.js";
 import type { SchemaIR } from "../schema/ir.js";
@@ -86,12 +86,22 @@ function parseSnapshot(text: string, name: string): SchemaIR {
   return value as SchemaIR;
 }
 
+/** Runs a filesystem call; failures become a generic MigrationError (no paths), original kept as debug cause. */
+function fsCall<T>(message: string, fn: () => T): T {
+  try {
+    return fn();
+  } catch (cause) {
+    throw new MigrationError(message, { cause });
+  }
+}
+
 /** Reads every migration in `dir`, sorted by name. A missing directory means no migrations. */
 export function readMigrations(dir: string): MigrationFile[] {
-  if (!existsSync(dir)) return [];
+  const failure = "Unable to read the migrations directory";
+  if (!fsCall(failure, () => existsSync(dir))) return [];
   const sqlNames = new Set<string>();
   const snapshotNames = new Set<string>();
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+  for (const entry of fsCall(failure, () => readdirSync(dir, { withFileTypes: true }))) {
     if (!entry.isFile() || !MIGRATION_FILE.test(entry.name)) continue;
     if (entry.name.endsWith(SQL_SUFFIX)) sqlNames.add(entry.name.slice(0, -SQL_SUFFIX.length));
     else snapshotNames.add(entry.name.slice(0, -SNAPSHOT_SUFFIX.length));
@@ -102,22 +112,59 @@ export function readMigrations(dir: string): MigrationFile[] {
     }
   }
   return [...sqlNames].sort().map((name) => {
-    const sql = normalize(readFileSync(join(dir, name + SQL_SUFFIX), "utf8"));
-    const snapshot = parseSnapshot(readFileSync(join(dir, name + SNAPSHOT_SUFFIX), "utf8"), name);
+    const unreadable = `Unable to read migration ${name}`;
+    const sql = normalize(fsCall(unreadable, () => readFileSync(join(dir, name + SQL_SUFFIX), "utf8")));
+    const snapshot = parseSnapshot(fsCall(unreadable, () => readFileSync(join(dir, name + SNAPSHOT_SUFFIX), "utf8")), name);
     return { name, sql, checksum: checksum(sql), snapshot };
   });
+}
+
+/** Best-effort removal of one migration's file pair; never throws. */
+export function discardMigration(
+  dir: string,
+  name: string,
+  suffixes: readonly string[] = [SQL_SUFFIX, SNAPSHOT_SUFFIX],
+): void {
+  if (!NAME.test(name)) return;
+  for (const suffix of suffixes) {
+    try {
+      rmSync(join(dir, name + suffix), { force: true });
+    } catch {
+      // best effort
+    }
+  }
+}
+
+/** Deletes only the files in `dir` that match MIGRATION_FILE. */
+export function deleteMigrationFiles(dir: string): void {
+  const failure = "Unable to remove migration files";
+  if (!fsCall(failure, () => existsSync(dir))) return;
+  for (const entry of fsCall(failure, () => readdirSync(dir, { withFileTypes: true }))) {
+    if (entry.isFile() && MIGRATION_FILE.test(entry.name)) fsCall(failure, () => {
+        unlinkSync(join(dir, entry.name));
+      });
+  }
 }
 
 /** Writes `<name>.sql` and `<name>.snapshot.json` (LF); refuses to overwrite existing files. */
 export function writeMigration(dir: string, name: string, sql: string, snapshot: SchemaIR): MigrationFile {
   if (!NAME.test(name)) throw new MigrationError("Invalid migration name");
   const content = normalize(sql);
-  mkdirSync(dir, { recursive: true });
+  const failure = `Unable to write migration ${name}`;
+  fsCall(failure, () => {
+    mkdirSync(dir, { recursive: true });
+  });
+  let wroteSql = false;
   try {
     writeFileSync(join(dir, name + SQL_SUFFIX), content, { flag: "wx" });
-    writeFileSync(join(dir, name + SNAPSHOT_SUFFIX), `${JSON.stringify(snapshot, null, 2)}\n`, { flag: "wx" });
-  } catch {
-    throw new MigrationError(`Unable to write migration ${name}`);
+    wroteSql = true;
+    writeFileSync(join(dir, name + SNAPSHOT_SUFFIX), `${JSON.stringify(snapshot, null, 2)}
+`, { flag: "wx" });
+  } catch (cause) {
+    // Only remove what this call created: an EEXIST failure means the file was not ours.
+    const existed = (cause as { code?: unknown }).code === "EEXIST";
+    if (wroteSql) discardMigration(dir, name, existed ? [SQL_SUFFIX] : [SQL_SUFFIX, SNAPSHOT_SUFFIX]);
+    throw new MigrationError(failure, { cause });
   }
   return { name, sql: content, checksum: checksum(content), snapshot };
 }

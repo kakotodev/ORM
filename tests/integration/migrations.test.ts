@@ -1,5 +1,5 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- test paths live in a temporary directory */
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteAdapter } from "../../src/adapters/sqlite.js";
@@ -151,6 +151,78 @@ describe("migrate", () => {
   });
 });
 
+describe("migration recovery and safety", () => {
+  const failing = (): Adapter => ({
+    ...adapter,
+    dialect: adapter.dialect,
+    transaction: () => Promise.reject(new Error("boom")),
+  });
+
+  it("names a new migration after a far-future file without looping", async () => {
+    writeMigration(dir, "29990101000000_future", "CREATE TABLE IF NOT EXISTS \"Z\" (\"x\" INTEGER)", base);
+    await migrate({ schema: base, adapter, dir, now });
+    const r = await migrate({ schema: withTag, adapter, dir, now });
+    expect(r.created).toBe("29990101000001_update");
+  });
+
+  it("rejects an exhausted timestamp", async () => {
+    writeMigration(dir, "99991231235959_last", "SELECT 1", base);
+    await expect(migrate({ schema: withTag, adapter, dir, now })).rejects.toThrow(/exhausted/);
+  });
+
+  it("rejects an unparsable timestamp", async () => {
+    writeMigration(dir, "20261399000000_bad", "SELECT 1", base);
+    await expect(migrate({ schema: withTag, adapter, dir, now })).rejects.toThrow(/invalid timestamp/);
+  });
+
+  it("removes a file pair it just created when applying fails", async () => {
+    await expect(migrate({ schema: base, adapter: failing(), dir, now })).rejects.toThrow(/failed to apply/);
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it("keeps a pre-existing pending file that fails and suggests how to recover", async () => {
+    writeMigration(dir, "20260101000000_bad", "CREATE TABLE \"Broken\" (", base);
+    const err = await migrate({ schema: base, adapter, dir, now }).catch((e: unknown) => e);
+    expect((err as Error).message).toMatch(/^Migration 20260101000000_bad failed to apply; .*reset --force/);
+    expect((err as Error).message).not.toContain("CREATE");
+    expect(readdirSync(dir)).toHaveLength(2);
+  });
+
+  it("cleans up the sql file when the snapshot cannot be written", () => {
+    mkdirSync(join(dir, "20260101000000_x.snapshot.json"), { recursive: true });
+    let message = "";
+    try {
+      writeMigration(dir, "20260101000000_x", "SELECT 1", base);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toBe("Unable to write migration 20260101000000_x");
+    expect(existsSync(join(dir, "20260101000000_x.sql"))).toBe(false);
+  });
+
+  it("turns filesystem failures into path-free MigrationErrors", async () => {
+    const file = join(root, "not-a-dir");
+    writeFileSync(file, "x");
+    for (const run of [
+      () => migrate({ schema: base, adapter, dir: file, now }),
+      () => resetDatabase({ schema: base, adapter, dir: file, force: true, env: {} }),
+    ]) {
+      const err = await run().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(MigrationError);
+      expect((err as Error).message).not.toContain(root);
+      expect(JSON.stringify(err)).not.toContain(root);
+    }
+  });
+
+  it("leaves the database untouched when reset cannot read the directory", async () => {
+    await migrate({ schema: base, adapter, dir, now });
+    rmSync(dir, { recursive: true, force: true });
+    writeFileSync(dir, "x");
+    await expect(resetDatabase({ schema: base, adapter, dir, force: true, env: {} })).rejects.toThrow(MigrationError);
+    expect(await tables()).toContain("User");
+  });
+});
+
 describe("resetDatabase", () => {
   it("requires force and refuses production", async () => {
     await expect(resetDatabase({ schema: base, adapter, dir, force: false })).rejects.toThrow(/--force/);
@@ -172,5 +244,13 @@ describe("resetDatabase", () => {
     const cols = await adapter.query({ text: 'PRAGMA table_info("User")', params: [] });
     expect(cols.map((c) => c["name"])).toContain("bio");
     expect((await migrate({ schema: changed, adapter, dir, now })).upToDate).toBe(true);
+  });
+
+  it("resets a database whose migration files were deleted by hand", async () => {
+    await migrate({ schema: base, adapter, dir, now });
+    rmSync(dir, { recursive: true, force: true });
+    const r = await resetDatabase({ schema: base, adapter, dir, force: true, env: {}, now });
+    expect(r.created).toMatch(/^\d{14}_init$/);
+    expect(await tables()).toContain("Post");
   });
 });
