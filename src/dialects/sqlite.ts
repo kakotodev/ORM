@@ -68,7 +68,8 @@ class Compiler {
 
   where(expr: SqlExpr | undefined): string {
     if (expr === undefined) return "";
-    const text = this.expr(expr, false);
+    // A top-level OR is parenthesised so the clause reads unambiguously.
+    const text = this.expr(expr, expr.kind === "or");
     return text === "" ? "" : ` WHERE ${text}`;
   }
 
