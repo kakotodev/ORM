@@ -1,4 +1,5 @@
 import type { Adapter, Queryable } from "../adapters/adapter.js";
+import { own } from "../own.js";
 import { MigrationError, safePath } from "../errors.js";
 import type { ModelIR, SchemaIR } from "../schema/ir.js";
 import { indexSchema } from "../schema/ir.js";
@@ -87,7 +88,7 @@ function nextName(existing: readonly MigrationFile[], label: string, now: Date):
 
 export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
   const { schema, adapter, dir } = options;
-  const now = options.now ?? ((): Date => new Date());
+  const now = own(options, "now") ?? ((): Date => new Date());
   await adapter.executeScript([CREATE_TRACKING]);
 
   const files = readMigrations(dir);
@@ -118,7 +119,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
   }
   if (diff.kind === "none") return { applied: appliedNow, created: null, upToDate: appliedNow.length === 0 };
 
-  const label = options.name ?? (files.length === 0 ? "init" : "update");
+  const label = own(options, "name") ?? (files.length === 0 ? "init" : "update");
   const name = nextName(files, label, now());
   const statements = adapter.dialect.createTables(indexSchema(schema), diff.newModels);
   const sql = `${statements.join(`\n${STATEMENT_BREAKPOINT}\n`)}\n`;
@@ -150,9 +151,9 @@ function dropOrder(schemas: readonly SchemaIR[]): string[] {
 export async function resetDatabase(
   options: MigrateOptions & { force: boolean; env?: Record<string, string | undefined> },
 ): Promise<MigrateResult> {
-  const env = options.env ?? process.env;
-  if (!options.force) throw new MigrationError("Refusing to reset without --force");
-  if (env["NODE_ENV"] === "production") throw new MigrationError("Refusing to reset a production database");
+  const env = own(options, "env") ?? process.env;
+  if (own(options, "force") !== true) throw new MigrationError("Refusing to reset without --force");
+  if (Object.hasOwn(env, "NODE_ENV") && env["NODE_ENV"] === "production") throw new MigrationError("Refusing to reset a production database");
 
   const { adapter, dir, schema } = options;
   const snapshots = readMigrations(dir).map((f) => f.snapshot);

@@ -30,7 +30,7 @@ describe("dynamic code", () => {
     }
   });
 
-  it("is forbidden by the lint configuration for every file of src/", async () => {
+  it("is forbidden by the lint configuration (checked on src/runtime/client.ts)", async () => {
     const eslint = new ESLint({ cwd: root });
     const config = (await eslint.calculateConfigForFile(join(root, "src", "runtime", "client.ts"))) as {
       rules: Record<string, unknown>;

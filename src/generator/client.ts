@@ -1,4 +1,5 @@
 import { ConfigError } from "../errors.js";
+import { own } from "../own.js";
 import type { EnumField, ModelIR, RelationField, ScalarField, SchemaIR } from "../schema/ir.js";
 
 export interface GenerateOptions {
@@ -73,11 +74,11 @@ function filterType(field: ColumnField): string | undefined {
 }
 
 function isRequiredOnCreate(field: ColumnField): boolean {
-  return !(field.nullable || field.default !== undefined || (field.kind === "scalar" && field.updatedAt));
+  return !(field.nullable || own(field, "default") !== undefined || (field.kind === "scalar" && field.updatedAt));
 }
 
 function isAutoincrementId(model: ModelIR, field: ColumnField): boolean {
-  return field.name === model.primaryKey && field.kind === "scalar" && field.default?.kind === "autoincrement";
+  return field.name === model.primaryKey && field.kind === "scalar" && own(field, "default")?.kind === "autoincrement";
 }
 
 function objectType(props: readonly string[]): string {

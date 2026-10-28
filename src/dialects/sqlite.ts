@@ -282,7 +282,7 @@ function columnDefinition(model: ModelIndex, field: ScalarField | EnumField, ind
   const name = quoteIdentifier(field.column);
   const isPrimary = field.name === model.ir.primaryKey;
   if (field.kind === "scalar") {
-    if (isPrimary && field.type === "Int" && field.default?.kind === "autoincrement") {
+    if (isPrimary && field.type === "Int" && own(field, "default")?.kind === "autoincrement") {
       return `${name} INTEGER PRIMARY KEY AUTOINCREMENT`;
     }
   }
@@ -290,7 +290,8 @@ function columnDefinition(model: ModelIndex, field: ScalarField | EnumField, ind
   if (!field.nullable || isPrimary) parts.push("NOT NULL");
   if (isPrimary) parts.push("PRIMARY KEY");
   else if (field.isUnique) parts.push("UNIQUE");
-  if (field.default?.kind === "literal") parts.push(`DEFAULT ${quoteLiteral(field.default.value)}`);
+  const literal = own(field, "default");
+  if (literal?.kind === "literal") parts.push(`DEFAULT ${quoteLiteral(literal.value)}`);
   if (field.kind === "enum") {
     const values = index.enums.get(field.enumName)?.values;
     if (values === undefined) return fail("Unknown enum in schema");

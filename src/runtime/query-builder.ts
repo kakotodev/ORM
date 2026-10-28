@@ -247,7 +247,7 @@ export interface WriteEnv {
 function runtimeDefault(field: FieldIR, env: WriteEnv): unknown {
   if (field.kind === "relation") return undefined;
   if (field.kind === "scalar" && field.updatedAt) return env.now;
-  const d = field.default;
+  const d = own(field, "default");
   if (d === undefined) return undefined;
   switch (d.kind) {
     case "now":
@@ -291,8 +291,8 @@ export function buildInsert(
   for (const f of target.ir.fields) {
     if (f.kind === "relation") continue;
     const provided = rows.some((r) => r.values.has(f.name));
-    const autoincrement = f.kind === "scalar" && f.default?.kind === "autoincrement";
-    const filled = f.kind === "scalar" && f.updatedAt ? true : f.default !== undefined && !autoincrement;
+    const autoincrement = f.kind === "scalar" && own(f, "default")?.kind === "autoincrement";
+    const filled = f.kind === "scalar" && f.updatedAt ? true : own(f, "default") !== undefined && !autoincrement;
     if (provided || filled) fields.push(f);
   }
   const values: SqlValue[][] = rows.map((row) =>

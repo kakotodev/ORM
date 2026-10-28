@@ -1,7 +1,12 @@
-import { SchemaError, ValidationError } from "../../src/errors.js";
+import { createSqliteAdapter } from "../../src/adapters/sqlite.js";
+import { sqliteDialect } from "../../src/dialects/sqlite.js";
+import { OrmError, SchemaError, ValidationError } from "../../src/errors.js";
+import { resetDatabase } from "../../src/migrations/runner.js";
+import { createRuntimeClient } from "../../src/runtime/client.js";
 import { loadSchema } from "../../src/schema/index.js";
+import { indexSchema } from "../../src/schema/ir.js";
 import { createTestClient } from "../helpers/db.js";
-import { minimalSchema } from "../helpers/schemas.js";
+import { BLOG_SCHEMA, minimalSchema } from "../helpers/schemas.js";
 
 const POLLUTION = '{"polluted":"yes"}';
 const FORBIDDEN = ["__proto__", "constructor", "prototype"] as const;
@@ -82,7 +87,41 @@ const POLLUTED: Record<string, unknown> = {
   offset: 1000,
   returning: [],
   filter: null,
+  // Optional IR fields and optional client / adapter / migration options.
+  default: { kind: "literal", value: "polluted-default" },
+  debug: true,
+  env: { DATABASE_URL: "file:./polluted-env.sqlite", NODE_ENV: "polluted" },
+  url: "file:./polluted-url.sqlite",
+  provider: "postgresql",
+  limits: { maxTake: 0, maxRows: 0 },
+  force: true,
+  adapter: { dialect: {}, query: () => Promise.reject(new Error("polluted adapter")) },
+  transactionTimeoutMs: -1,
+  now: () => new Date(0),
 };
+
+function summary(err: unknown): string {
+  if (!(err instanceof OrmError)) throw new Error("expected an OrmError");
+  return `${err.name}|${err.code}|${err.message}|debug=${String(Object.hasOwn(err, "debug"))}`;
+}
+
+async function failure(p: Promise<unknown>): Promise<string> {
+  try {
+    await p;
+  } catch (err) {
+    return summary(err);
+  }
+  return "no error";
+}
+
+const DEFAULT_VARIANTS: unknown[] = [
+  POLLUTED["default"],
+  { kind: "autoincrement" },
+  { kind: "now" },
+  { kind: "uuid" },
+];
+
+const PLAIN_SCHEMA = minimalSchema("model A {\n  id Int @id\n  n String?\n  s String\n}");
 
 async function battery(): Promise<string> {
   const db = await createTestClient();
@@ -104,6 +143,37 @@ async function battery(): Promise<string> {
   out.push(await db.user.delete({ where: { email: "c@x" }, include: { posts: true } }));
   out.push(await db.post.deleteMany({ where: {} }));
   out.push(await db.user.deleteMany({ where: {} }));
+
+  // Required fields stay required, constraint errors stay quiet, DDL and options are unchanged.
+  out.push(await failure(db.user.create({ data: {} })));
+  out.push(await failure(db.post.create({ data: { title: "no author" } })));
+  await db.user.create({ data: { email: "dup@x" } });
+  out.push(await failure(db.user.create({ data: { email: "dup@x" } })));
+  const schema = loadSchema(BLOG_SCHEMA);
+  out.push(sqliteDialect.createTables(indexSchema(schema)));
+  try {
+    createRuntimeClient(schema, {});
+    out.push("client opened");
+  } catch (err) {
+    out.push(summary(err));
+  }
+  try {
+    createRuntimeClient(schema, { url: "file::memory:" });
+    out.push("client opened");
+  } catch (err) {
+    out.push(summary(err));
+  }
+  // A model whose fields have no default at all: nothing may be inferred for them.
+  const plain = await createTestClient<"a">(PLAIN_SCHEMA);
+  out.push(sqliteDialect.createTables(indexSchema(loadSchema(PLAIN_SCHEMA))));
+  out.push(await failure(plain.a.create({ data: { id: 1 } })));
+  out.push(await plain.a.create({ data: { id: 2, s: "x" } }));
+  out.push(await plain.a.createMany({ data: [{ id: 3, s: "y" }, { id: 4, s: "z", n: "n" }] }));
+  out.push(await plain.a.findMany({ orderBy: { id: "asc" } }));
+  const adapter = createSqliteAdapter({ url: "file::memory:" });
+  out.push(await failure(resetDatabase({ schema, adapter, dir: "unused" } as unknown as Parameters<typeof resetDatabase>[0])));
+  out.push(await failure(adapter.query({ text: "SELECT * FROM nope", params: [] })));
+  await adapter.close();
   return JSON.stringify(out, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v));
 }
 
@@ -111,16 +181,18 @@ describe("inherited properties", () => {
   it("polluting Object.prototype never changes what a query does", async () => {
     const clean = await battery();
     expect(clean.length).toBeGreaterThan(100);
-    for (const [k, v] of Object.entries(POLLUTED)) {
-      Object.defineProperty(Object.prototype, k, { value: v, configurable: true, writable: true, enumerable: true });
-    }
-    try {
-      const polluted = await battery();
-      // Dates differ between runs; compare the structure with timestamps masked.
-      const mask = (text: string): string => text.replace(/"\d{4}-\d\d-\d\dT[\d:.]+Z"/g, '"D"');
-      expect(mask(polluted)).toBe(mask(clean));
-    } finally {
-      for (const k of Object.keys(POLLUTED)) Reflect.deleteProperty(Object.prototype, k);
+    const mask = (text: string): string => text.replace(/"\d{4}-\d\d-\d\dT[\d:.]+Z"/g, '"D"');
+    // `default` is polluted with several shapes: each one must be ignored.
+    for (const variant of DEFAULT_VARIANTS) {
+      const pollution = { ...POLLUTED, default: variant };
+      for (const [k, v] of Object.entries(pollution)) {
+        Object.defineProperty(Object.prototype, k, { value: v, configurable: true, writable: true, enumerable: true });
+      }
+      try {
+        expect(mask(await battery())).toBe(mask(clean));
+      } finally {
+        for (const k of Object.keys(pollution)) Reflect.deleteProperty(Object.prototype, k);
+      }
     }
   });
 

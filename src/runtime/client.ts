@@ -1,4 +1,5 @@
 import type { Adapter, Queryable } from "../adapters/adapter.js";
+import { own } from "../own.js";
 import { createSqliteAdapter } from "../adapters/sqlite.js";
 import { ConfigError, safePath, TransactionError, ValidationError } from "../errors.js";
 import type { SchemaIR } from "../schema/ir.js";
@@ -33,17 +34,19 @@ export interface RuntimeClient {
 }
 
 function databaseUrl(schema: SchemaIR, options: ClientOptions): string {
-  if (options.url !== undefined) return options.url;
-  const env = options.env ?? process.env;
+  const given = own(options, "url");
+  if (given !== undefined) return given;
+  const env = own(options, "env") ?? process.env;
   const value = Object.hasOwn(env, schema.urlEnv) ? env[schema.urlEnv] : undefined;
   if (value === undefined || value === "") throw new ConfigError(`Missing database URL (set ${safePath(schema.urlEnv)})`);
   return value;
 }
 
 function openAdapter(schema: SchemaIR, options: ClientOptions): Adapter {
-  if (options.adapter !== undefined) return options.adapter;
+  const open = own(options, "adapter");
+  if (open !== undefined) return open;
   const url = databaseUrl(schema, options);
-  const timeout = options.transactionTimeoutMs;
+  const timeout = own(options, "transactionTimeoutMs");
   return createSqliteAdapter(timeout === undefined ? { url } : { url, transactionTimeoutMs: timeout });
 }
 
@@ -71,12 +74,12 @@ function delegates(engine: Engine, scope: Scope): Record<string, unknown> {
  * through the adapter and returns plain objects decoded from schema fields only.
  */
 export function createRuntimeClient(schema: SchemaIR, options: ClientOptions = {}): RuntimeClient {
-  const provider = options.provider ?? schema.provider;
+  const provider = own(options, "provider") ?? schema.provider;
   if (provider === "postgresql") throw new ConfigError("Provider postgresql is not supported yet");
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- options may come from untyped code
   if (provider !== "sqlite") throw new ConfigError("Unsupported provider");
-  const limits = resolveRuntimeLimits(options.limits);
-  const debug = options.debug === true;
+  const limits = resolveRuntimeLimits(own(options, "limits"));
+  const debug = own(options, "debug") === true;
   const index = indexSchema(schema);
   let adapter: Adapter;
   try {

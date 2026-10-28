@@ -1,4 +1,5 @@
 import type { ModelIndex, RelationField } from "../../schema/ir.js";
+import { own } from "../../own.js";
 import { type Ctx, model, parseUniqueWhere } from "./filters.js";
 import { fail, join, readObject } from "./plain.js";
 import { validateScalar } from "./scalars.js";
@@ -38,7 +39,7 @@ export function parseData(ctx: Ctx, target: ModelIndex, value: unknown, path: st
     }
     if (target.ir.primaryKey === key) {
       if (mode === "update") fail("The id cannot be modified", keyPath);
-      if (field.kind === "scalar" && field.default?.kind === "autoincrement") fail("Autoincrement ids cannot be set", keyPath);
+      if (field.kind === "scalar" && own(field, "default")?.kind === "autoincrement") fail("Autoincrement ids cannot be set", keyPath);
     }
     values.set(key, validateScalar(ctx.index, field, entry, keyPath, ctx.limits));
   }
@@ -56,7 +57,7 @@ export function parseData(ctx: Ctx, target: ModelIndex, value: unknown, path: st
 
   for (const field of target.ir.fields) {
     if (field.kind === "relation" || values.has(field.name) || coveredByConnect.has(field.name)) continue;
-    const optional = field.nullable || field.default !== undefined || (field.kind === "scalar" && field.updatedAt);
+    const optional = field.nullable || own(field, "default") !== undefined || (field.kind === "scalar" && field.updatedAt);
     if (optional) continue;
     const owner = target.ir.fields.find((f) => f.kind === "relation" && f.fields.includes(field.name));
     if (owner !== undefined) fail("Missing required relation (provide its foreign key or connect)", join(path, owner.name));

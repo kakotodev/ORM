@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { own } from "../own.js";
 import { DatabaseSync } from "node:sqlite";
 import { ConfigError, DatabaseError, TransactionError } from "../errors.js";
 import { sqliteDialect } from "../dialects/sqlite.js";
@@ -69,8 +70,8 @@ export function createSqliteAdapter(options: {
   /** Interactive transaction timeout in ms (positive safe integer, default 5000). */
   transactionTimeoutMs?: number;
 }): Adapter {
-  const { memory, path } = parseUrl(options.url);
-  const timeoutMs = options.transactionTimeoutMs ?? DEFAULT_TRANSACTION_TIMEOUT_MS;
+  const { memory, path } = parseUrl(own(options, "url") ?? "");
+  const timeoutMs = own(options, "transactionTimeoutMs") ?? DEFAULT_TRANSACTION_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
     throw new ConfigError("Invalid transaction timeout");
   }
