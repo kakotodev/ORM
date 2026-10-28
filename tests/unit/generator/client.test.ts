@@ -57,6 +57,19 @@ describe("generateClient", () => {
     expect(() => generateClient(loadSchema(schema))).toThrow(ConfigError);
   });
 
+  it.each(["Date", "Uint8Array", "string", "default", "never", "Promise"])(
+    "rejects an enum named %s, which would shadow or break a TypeScript name",
+    (name) => {
+      const schema = minimalSchema(`enum ${name} {\n X\n}\n\nmodel A {\n  id Int @id\n  at DateTime\n  e ${name}\n}`);
+      expect(() => generateClient(loadSchema(schema))).toThrow(ConfigError);
+    },
+  );
+
+  it("accepts model names equal to globals, as they are only emitted as prefixes", () => {
+    const schema = minimalSchema("model Date {\n  id Int @id\n  at DateTime\n}");
+    expect(generateClient(loadSchema(schema))["index.d.ts"]).toContain("export type DateScalars = {\n  id: number;\n  at: Date;\n};");
+  });
+
   it("types compound uniques, optional relations and createMany without connect", () => {
     const schema = minimalSchema(
       [

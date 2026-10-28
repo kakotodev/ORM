@@ -175,10 +175,32 @@ function orderable(model: ModelIR): string {
   return names.length === 0 ? "never" : names.join(" | ");
 }
 
-/** Every exported name of index.d.ts; a duplicate would make the declaration file invalid. */
+/**
+ * Names an emitted type alias must not take: JS/TS keywords and reserved words, TS primitive type names (an alias
+ * named `string` does not compile) and globals the declarations rely on (an alias named `Date` would shadow the
+ * global and retype every DateTime field).
+ */
+const RESERVED_TYPE_NAMES: ReadonlySet<string> = new Set([
+  // Keywords and reserved words (strict mode included).
+  "break", "case", "catch", "class", "const", "continue", "debugger", "default", "delete", "do", "else", "enum",
+  "export", "extends", "false", "finally", "for", "function", "if", "import", "in", "instanceof", "new", "null",
+  "return", "super", "switch", "this", "throw", "true", "try", "typeof", "var", "void", "while", "with", "as",
+  "implements", "interface", "let", "package", "private", "protected", "public", "static", "yield", "await",
+  "async", "arguments", "eval", "type", "declare", "namespace", "module", "abstract", "readonly", "keyof",
+  "infer", "is", "asserts", "satisfies", "accessor", "global", "require", "of", "out", "override", "get", "set",
+  // TypeScript primitive and special type names.
+  "any", "unknown", "never", "object", "string", "number", "boolean", "bigint", "symbol", "undefined", "intrinsic",
+  // Globals used by the declarations or commonly needed next to them.
+  "Date", "Uint8Array", "Array", "ReadonlyArray", "Record", "Promise", "PromiseLike", "Object", "String", "Number",
+  "Boolean", "BigInt", "Symbol", "Function", "Error", "Map", "Set", "JSON", "Partial", "Required", "Readonly",
+  "Pick", "Omit", "Exclude", "Extract", "NonNullable", "Awaited", "ReturnType",
+]);
+
+/** Every exported name of index.d.ts; a duplicate or reserved name would make the declaration file invalid or lie. */
 function checkNames(schema: SchemaIR, suffixes: readonly string[]): void {
   const names = new Set(["TypeMapDef", "Delegates", "DbClient", "createClient"]);
   const add = (name: string): void => {
+    if (RESERVED_TYPE_NAMES.has(name)) throw new ConfigError(`Schema name ${name} is reserved in TypeScript`);
     if (names.has(name)) throw new ConfigError("Schema names collide with generated type names");
     names.add(name);
   };
