@@ -411,4 +411,45 @@ describe("sqlite codec", () => {
     const rel: FieldIR = { kind: "relation", name: "r", target: "T", list: false, nullable: false, fields: [], references: [], onDelete: "Restrict" };
     expect(() => sqliteDialect.encode(rel, 1)).toThrow(OrmError);
   });
+  it.each<[ScalarType, unknown]>([
+    ["Float", "1"],
+    ["Float", Number.NaN],
+    ["BigInt", 1],
+    ["Decimal", 1],
+    ["String", 1],
+    ["Boolean", 1],
+    ["Json", undefined],
+    ["Bytes", [1]],
+  ])("rejects a wrong runtime value for encode(%s)", (type, value) => {
+    expect(() => sqliteDialect.encode(field(type), value)).toThrow(OrmError);
+  });
+
+  it("rejects a non-string enum value", () => {
+    const roleField: FieldIR = { kind: "enum", name: "r", column: "r", enumName: "Role", nullable: false, isUnique: false };
+    expect(() => sqliteDialect.encode(roleField, 1)).toThrow(OrmError);
+  });
+
+  it.each<[ScalarType, unknown]>([
+    ["Int", "1"],
+    ["Int", 2n ** 60n],
+    ["Float", "1"],
+    ["BigInt", "1"],
+    ["Decimal", 1],
+    ["String", 1],
+    ["Boolean", 2],
+    ["DateTime", 1],
+    ["Json", 1],
+    ["Bytes", "x"],
+  ])("rejects an undecodable stored value for decode(%s)", (type, raw) => {
+    expect(() => sqliteDialect.decode(field(type), raw)).toThrow(OrmError);
+  });
+
+  it("decodes alternative driver representations", () => {
+    expect(sqliteDialect.decode(field("Float"), 3n)).toBe(3);
+    expect(sqliteDialect.decode(field("Boolean"), true)).toBe(true);
+    expect(sqliteDialect.decode(field("Boolean"), false)).toBe(false);
+    expect(sqliteDialect.decode(field("Boolean"), 1n)).toBe(true);
+    expect(sqliteDialect.decode(field("DateTime"), "2026-01-01T00:00:00.000Z")).toEqual(new Date("2026-01-01T00:00:00.000Z"));
+    expect(sqliteDialect.decode(field("Int"), 5)).toBe(5);
+  });
 });
