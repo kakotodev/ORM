@@ -1,6 +1,3 @@
-/* eslint-disable security/detect-non-literal-fs-filename --
-   Paths are built with `join(dir, name)`, where `name` comes only from `migrationName` or from a
-   directory entry that matched MIGRATION_FILE; the directory is chosen by the developer. */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";

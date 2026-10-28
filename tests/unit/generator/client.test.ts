@@ -9,7 +9,6 @@ import { BLOG_SCHEMA, minimalSchema } from "../../helpers/schemas.js";
 
 function fixture(name: string): string {
   // Fixed fixture names only, not user input.
-  // eslint-disable-next-line security/detect-non-literal-fs-filename
   return readFileSync(new URL(`../../fixtures/generated/blog/${name}`, import.meta.url), "utf8");
 }
 

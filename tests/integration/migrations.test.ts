@@ -1,4 +1,3 @@
-/* eslint-disable security/detect-non-literal-fs-filename -- test paths live in a temporary directory */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

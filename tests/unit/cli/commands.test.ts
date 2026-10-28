@@ -118,4 +118,25 @@ describe("mini-orm CLI", () => {
     expect(io.err).toHaveLength(1);
     expect(all()).not.toContain("nodir");
   });
+
+  it("prints debug details with --debug but never the URL", async () => {
+    io.env["DATABASE_URL"] = `file:${join(tmp, "nodir", "x.db")}`;
+    expect(await run(["migrate", "--debug", "--schema", schemaPath, "--dir", "migrations"], io)).toBe(1);
+    expect(io.err.some((l) => l.startsWith("debug:"))).toBe(true);
+    expect(all()).not.toContain("nodir");
+    expect(all()).not.toContain("x.db");
+  });
+
+  it("returns 2 with a generic line and no stack for an unexpected failure", async () => {
+    io.stdout = () => {
+      throw new Error("boom at secret path");
+    };
+    expect(await run(["--help"], io)).toBe(2);
+    expect(io.err).toEqual(["error: unexpected failure (re-run with --debug)"]);
+  });
+
+  it("rejects a malicious --runtime-import without writing files", async () => {
+    expect(await run(["generate", "--schema", schemaPath, "--out", "gen", "--runtime-import", 'a"; evil()'], io)).toBe(1);
+    expect(existsSync(join(tmp, "gen"))).toBe(false);
+  });
 });
