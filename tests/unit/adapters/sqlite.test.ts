@@ -182,6 +182,50 @@ describe("sqlite adapter", () => {
   });
 });
 
+describe("sqlite adapter transaction timeout", () => {
+  it("times out when the callback awaits the outer adapter, then recovers", async () => {
+    const a = createSqliteAdapter({ url: "file::memory:", transactionTimeoutMs: 50 });
+    await a.executeScript(["CREATE TABLE t (x INTEGER)"]);
+    let leaked: Queryable | undefined;
+    const err: unknown = await a
+      .transaction(async (tx) => {
+        leaked = tx;
+        await tx.execute({ text: "INSERT INTO t VALUES (1)", params: [] });
+        await a.query({ text: "SELECT * FROM t", params: [] }); // deadlocks without the timeout
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TransactionError);
+    expect((err as Error).message).toBe("Transaction timed out");
+    await expect(leaked?.query({ text: "SELECT 1", params: [] })).rejects.toBeInstanceOf(
+      TransactionError,
+    );
+    expect(await a.query({ text: "SELECT * FROM t", params: [] })).toEqual([]);
+    await a.close();
+  });
+
+  it("commits a fast transaction and leaves no pending timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const a = createSqliteAdapter({ url: "file::memory:", transactionTimeoutMs: 50 });
+      await a.executeScript(["CREATE TABLE t (x INTEGER)"]);
+      await a.transaction(async (tx) => {
+        await tx.execute({ text: "INSERT INTO t VALUES (1)", params: [] });
+      });
+      expect(vi.getTimerCount()).toBe(0);
+      expect(await a.query({ text: "SELECT x FROM t", params: [] })).toEqual([{ x: 1n }]);
+      await a.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity])("rejects timeout %s", (transactionTimeoutMs) => {
+    expect(() => createSqliteAdapter({ url: "file::memory:", transactionTimeoutMs })).toThrow(
+      ConfigError,
+    );
+  });
+});
+
 describe("sqlite adapter urls", () => {
   it("refuses unsupported URLs without echoing them", () => {
     const url = "postgres://u:secret@h/db";

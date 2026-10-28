@@ -62,8 +62,18 @@ function parseUrl(url: string): { memory: boolean; path: string } {
   throw new ConfigError("Unsupported SQLite URL");
 }
 
-export function createSqliteAdapter(options: { url: string }): Adapter {
+const DEFAULT_TRANSACTION_TIMEOUT_MS = 5000;
+
+export function createSqliteAdapter(options: {
+  url: string;
+  /** Interactive transaction timeout in ms (positive safe integer, default 5000). */
+  transactionTimeoutMs?: number;
+}): Adapter {
   const { memory, path } = parseUrl(options.url);
+  const timeoutMs = options.transactionTimeoutMs ?? DEFAULT_TRANSACTION_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new ConfigError("Invalid transaction timeout");
+  }
   let db: DatabaseSync;
   try {
     db = new DatabaseSync(path);
@@ -153,13 +163,21 @@ export function createSqliteAdapter(options: { url: string }): Adapter {
           query: (q) => Promise.resolve().then(() => (guard(), runQuery(q))),
           execute: (q) => Promise.resolve().then(() => (guard(), runExecute(q))),
         };
+        let timer: NodeJS.Timeout | undefined;
+        const timedOut = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new TransactionError("Transaction timed out"));
+          }, timeoutMs);
+        });
         let result: T;
         try {
-          result = await fn(tx);
+          result = await Promise.race([fn(tx), timedOut]);
         } catch (err) {
           active = false;
           rollback();
           throw err;
+        } finally {
+          clearTimeout(timer);
         }
         active = false;
         try {

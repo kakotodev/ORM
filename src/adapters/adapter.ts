@@ -42,6 +42,13 @@ export interface Adapter extends Queryable {
   readonly dialect: Dialect;
   /** Runs DDL statements in order inside one transaction. */
   executeScript(statements: readonly string[]): Promise<void>;
+  /**
+   * Runs `fn` in a transaction that holds the adapter's lock until it ends. Inside `fn`, use
+   * only the provided `tx`: awaiting a call on the outer adapter would wait for this very
+   * transaction. To prevent a permanent deadlock, a callback that has not settled within the
+   * transaction timeout (default 5000 ms) is rolled back and `transaction` rejects with
+   * `TransactionError("Transaction timed out")`; later `tx` calls also fail.
+   */
   transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
   close(): Promise<void>;
 }
