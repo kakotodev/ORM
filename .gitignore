@@ -1,0 +1,12 @@
+# Documents de conception et plans de travail (locaux, non versionnés)
+docs/superpowers/
+.superpowers/
+
+node_modules/
+dist/
+coverage/
+*.db
+*.db-wal
+*.db-shm
+examples/blog/generated/
+examples/blog/migrations/
