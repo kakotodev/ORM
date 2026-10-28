@@ -1,6 +1,7 @@
 import { createSqliteAdapter } from "../../src/adapters/sqlite.js";
 import { sqliteDialect } from "../../src/dialects/sqlite.js";
 import { OrmError, SchemaError, ValidationError } from "../../src/errors.js";
+import { generateClient } from "../../src/generator/client.js";
 import { resetDatabase } from "../../src/migrations/runner.js";
 import { createRuntimeClient } from "../../src/runtime/client.js";
 import { loadSchema } from "../../src/schema/index.js";
@@ -215,6 +216,52 @@ describe("inherited properties", () => {
     const user = db.user as unknown as Record<string, unknown>;
     expect(Reflect.get(user, "constructor")).toBeUndefined();
     expect(Reflect.get(user, "hasOwnProperty")).toBeUndefined();
+  });
+});
+
+/** Defines `values` on Object.prototype for the duration of `fn`. */
+function withPollution<T>(values: Record<string, unknown>, fn: () => T): T {
+  for (const [k, v] of Object.entries(values)) {
+    Object.defineProperty(Object.prototype, k, { value: v, configurable: true, writable: true, enumerable: true });
+  }
+  try {
+    return fn();
+  } finally {
+    for (const k of Object.keys(values)) Reflect.deleteProperty(Object.prototype, k);
+  }
+}
+
+function schemaOutcome(source: string): string {
+  try {
+    return JSON.stringify(loadSchema(source));
+  } catch (err) {
+    if (!(err instanceof SchemaError)) throw err;
+    return `${err.message}|${JSON.stringify(err.diagnostics)}`;
+  }
+}
+
+describe("inherited generator and schema options", () => {
+  it("a polluted runtimeImport never changes the generated client", () => {
+    const schema = loadSchema(BLOG_SCHEMA);
+    const clean = generateClient(schema);
+    const polluted = withPollution({ runtimeImport: "polluted-runtime" }, () => generateClient(schema));
+    expect(polluted).toEqual(clean);
+    expect(polluted["index.js"]).not.toContain("polluted");
+  });
+
+  it("polluted limits, file or limit keys never change what loadSchema does", () => {
+    // The blog schema nests calls two levels deep (`@default(autoincrement())`) and has long identifiers.
+    const sources = [BLOG_SCHEMA, minimalSchema("model A {\n  id Nope @id\n}"), "model {"];
+    const clean = sources.map(schemaOutcome);
+    expect(clean[0]).not.toContain("Schema is invalid");
+    for (const pollution of [
+      { maxSourceBytes: 10, maxIdentifierLength: 1, maxStringLength: 1, maxNestingDepth: 1 },
+      { maxSourceBytes: 10_000_000, maxIdentifierLength: 10_000, maxStringLength: 10_000_000, maxNestingDepth: 10_000 },
+      { limits: { maxSourceBytes: 10, maxIdentifierLength: 1, maxStringLength: 1, maxNestingDepth: 1 } },
+      { file: "polluted.orm" },
+    ]) {
+      expect(withPollution(pollution, () => sources.map(schemaOutcome))).toEqual(clean);
+    }
   });
 });
 

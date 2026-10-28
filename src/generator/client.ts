@@ -267,7 +267,7 @@ function declarations(schema: SchemaIR, runtimeImport: string): string {
  * written into code) and index.d.ts declares the typed client.
  */
 export function generateClient(schema: SchemaIR, options: Partial<GenerateOptions> = {}): GeneratedClient {
-  const runtimeImport = options.runtimeImport ?? "mini-orm";
+  const runtimeImport = own(options, "runtimeImport") ?? "mini-orm";
   if (typeof runtimeImport !== "string" || !RUNTIME_IMPORT.test(runtimeImport)) {
     throw new ConfigError("Invalid runtimeImport");
   }

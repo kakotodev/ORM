@@ -1,5 +1,6 @@
 import { SchemaError } from "../../../src/errors.js";
 import { tokenize } from "../../../src/schema/lexer.js";
+import { DEFAULT_SCHEMA_LIMITS } from "../../../src/schema/limits.js";
 
 function diag(src: string, limits?: Parameters<typeof tokenize>[1]) {
   try {
@@ -51,6 +52,18 @@ it.each([
   const d = diag(src);
   expect(d.line).toBeGreaterThan(0);
   expect(d.column).toBeGreaterThan(0);
+});
+it("ignores undefined, NaN, non-finite, non-positive and fractional limit overrides", () => {
+  const big = "a".repeat(DEFAULT_SCHEMA_LIMITS.maxSourceBytes + 1);
+  const longIdent = "a".repeat(DEFAULT_SCHEMA_LIMITS.maxIdentifierLength + 1);
+  const longString = `"${"s".repeat(DEFAULT_SCHEMA_LIMITS.maxStringLength + 1)}"`;
+  for (const bad of [undefined, Number.NaN, Infinity, -Infinity, 0, -1, 1.5]) {
+    expect(() => tokenize(big, { maxSourceBytes: bad })).toThrow(SchemaError);
+    expect(() => tokenize(longIdent, { maxIdentifierLength: bad })).toThrow(SchemaError);
+    expect(() => tokenize(longString, { maxStringLength: bad })).toThrow(SchemaError);
+  }
+  // Inherited limits are ignored as well.
+  expect(() => tokenize(longIdent, Object.create({ maxIdentifierLength: 1000 }) as object)).toThrow(SchemaError);
 });
 it("rejects sources over maxSourceBytes (UTF-8 bytes)", () => {
   expect(() => tokenize("a".repeat(11), { maxSourceBytes: 10 })).toThrow(SchemaError);

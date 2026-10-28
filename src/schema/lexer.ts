@@ -1,5 +1,5 @@
 import { SchemaError } from "../errors.js";
-import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "./limits.js";
+import { resolveSchemaLimits, type SchemaLimits } from "./limits.js";
 
 export type TokenKind =
   | "ident"
@@ -47,7 +47,7 @@ const isIdentPart = (c: string | undefined): boolean => isIdentStart(c) || isDig
 
 /** Splits schema source into tokens. Throws a SchemaError (never echoing source content) on invalid input. */
 export function tokenize(source: string, limits: Partial<SchemaLimits> = {}): Token[] {
-  const { maxSourceBytes, maxIdentifierLength, maxStringLength } = { ...DEFAULT_SCHEMA_LIMITS, ...limits };
+  const { maxSourceBytes, maxIdentifierLength, maxStringLength } = resolveSchemaLimits(limits);
 
   let line = 1;
   let lineStart = 0; // index of the first character of the current line

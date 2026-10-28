@@ -10,7 +10,8 @@ import type {
   SchemaAst,
 } from "./ast.js";
 import { tokenize, type Token, type TokenKind } from "./lexer.js";
-import { DEFAULT_SCHEMA_LIMITS, type SchemaLimits } from "./limits.js";
+import { own } from "../own.js";
+import { resolveSchemaLimits, type SchemaLimits } from "./limits.js";
 
 export interface ParseOptions {
   file?: string;
@@ -26,27 +27,17 @@ class ParseFailure extends Error {
   }
 }
 
-/** Ignores undefined, non-finite and non-positive overrides so they can never disable a limit. */
-function resolveLimits(overrides: Partial<SchemaLimits> | undefined): SchemaLimits {
-  const resolved: SchemaLimits = { ...DEFAULT_SCHEMA_LIMITS };
-  if (overrides === undefined) return resolved;
-  for (const key of Object.keys(DEFAULT_SCHEMA_LIMITS) as (keyof SchemaLimits)[]) {
-    const value = overrides[key];
-    if (typeof value === "number" && Number.isFinite(value) && value > 0) resolved[key] = value;
-  }
-  return resolved;
-}
-
 const BLOCK_KEYWORDS: ReadonlySet<string> = new Set(["model", "enum", "datasource", "generator"]);
 
 /** Parses schema source into an AST. Throws one SchemaError holding every diagnostic found. */
 export function parse(source: string, options: ParseOptions = {}): SchemaAst {
-  const limits = resolveLimits(options.limits);
+  const limits = resolveSchemaLimits(own(options, "limits"));
+  const file = own(options, "file");
   let tokens: Token[];
   try {
     tokens = tokenize(source, limits);
   } catch (e) {
-    if (e instanceof SchemaError) throw new SchemaError(e.diagnostics, options.file);
+    if (e instanceof SchemaError) throw new SchemaError(e.diagnostics, file);
     throw e;
   }
 
@@ -267,6 +258,6 @@ export function parse(source: string, options: ParseOptions = {}): SchemaAst {
     }
   }
 
-  if (diagnostics.length > 0) throw new SchemaError(diagnostics, options.file);
+  if (diagnostics.length > 0) throw new SchemaError(diagnostics, file);
   return { blocks };
 }
