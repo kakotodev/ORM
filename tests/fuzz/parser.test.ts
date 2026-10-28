@@ -8,7 +8,7 @@ import { numRuns } from "./arbitraries.js";
 function check(source: string): void {
   const start = performance.now();
   try {
-    expect(typeof loadSchema(source)).toBe("object");
+    expect(loadSchema(source)).toHaveProperty("models");
   } catch (error) {
     expect(error).toBeInstanceOf(SchemaError);
   }
@@ -43,7 +43,20 @@ const TOKENS = [
   "\n", '"', "=", ",", "env(", "@relation(", "fields:", "references:",
 ] as const;
 
+const DEEP = [
+  "@x(" + "[".repeat(5000),
+  "model A {\n  id Int @id @x(" + "[".repeat(5000) + "\n}",
+  "model A {" + "{".repeat(5000),
+  "model A { id Int @default(" + "f(".repeat(5000) + ")".repeat(5000) + ") }",
+  BLOG_SCHEMA + "(".repeat(20_000),
+  "/*".repeat(5000),
+];
+
 describe("schema parser fuzzing", () => {
+  it("deeply nested inputs give an IR or a SchemaError, quickly", () => {
+    for (const source of DEEP) check(source);
+  });
+
   it("random strings give an IR or a SchemaError, quickly", () => {
     fc.assert(fc.property(fc.string({ unit: "binary", maxLength: 300 }), check), { numRuns: numRuns() });
   });

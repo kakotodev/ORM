@@ -1,7 +1,11 @@
 import fc from "fast-check";
+import { vi } from "vitest";
 import type { FieldIR } from "../../src/schema/ir.js";
 import { idx } from "../helpers/builder.js";
 import { INJECTION_PAYLOADS } from "../security/corpus.js";
+
+// Deep campaigns (FC_NUM_RUNS=2000+) exceed the default 5 s per-test timeout.
+vi.setConfig({ testTimeout: 300_000 });
 
 /** Number of runs per property; override with FC_NUM_RUNS for deeper campaigns. */
 export function numRuns(): number {
@@ -106,15 +110,15 @@ function opsFor(field: FieldIR): readonly string[] {
   }
 }
 
-type Set = "a" | "b";
-type Builder = (set: Set) => unknown;
+type ValueSet = "a" | "b";
+type Builder = (set: ValueSet) => unknown;
 
 /** A `where` shape carrying two independent value sets (`a` and `b`) for every value slot. */
 export interface Shape {
-  readonly build: (set: Set) => Record<string, unknown>;
+  readonly build: (set: ValueSet) => Record<string, unknown>;
 }
 
-function slot(field: FieldIR): fc.Arbitrary<Record<Set, unknown>> {
+function slot(field: FieldIR): fc.Arbitrary<Record<ValueSet, unknown>> {
   return fc.record({ a: arbValueFor(field), b: arbValueFor(field) });
 }
 
@@ -123,9 +127,9 @@ function operatorValue(field: FieldIR, op: string): fc.Arbitrary<Builder> {
     return fc
       .integer({ min: 0, max: 4 })
       .chain((n) => fc.array(slot(field), { minLength: n, maxLength: n }))
-      .map((slots) => (set: Set) => slots.map((s) => s[set]));
+      .map((slots) => (set: ValueSet) => slots.map((s) => s[set]));
   }
-  return slot(field).map((s) => (set: Set) => s[set]);
+  return slot(field).map((s) => (set: ValueSet) => s[set]);
 }
 
 function leaf(field: FieldIR): fc.Arbitrary<Builder> {
@@ -168,7 +172,7 @@ export function arbWhere(modelName: string, depth = 3): fc.Arbitrary<Shape> {
     entries.NOT = sub.map((x): Builder => (set) => x.build(set));
   }
   return fc.record(entries, { requiredKeys: [] }).map((rec) => ({
-    build: (set: Set): Record<string, unknown> =>
+    build: (set: ValueSet): Record<string, unknown> =>
       Object.fromEntries(Object.entries(rec).map(([k, v]) => [k, (v as Builder)(set)])),
   }));
 }
@@ -181,4 +185,43 @@ export function stringsIn(value: unknown): string[] {
     return Object.values(value).flatMap(stringsIn);
   }
   return [];
+}
+
+/** Number of scalar values (not containers, not empty lists) inside a where-like value. */
+export function leafCount(value: unknown): number {
+  if (Array.isArray(value)) return value.reduce<number>((n, v) => n + leafCount(v), 0);
+  if (typeof value === "object" && value !== null && !(value instanceof Date) && !(value instanceof Uint8Array)) {
+    return Object.values(value).reduce<number>((n, v) => n + leafCount(v), 0);
+  }
+  return 1;
+}
+
+function isPlain(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && !(value instanceof Date) && !(value instanceof Uint8Array);
+}
+
+/**
+ * Returns a copy of `root` where an own `key` is defined (via defineProperty, so `__proto__` is an own
+ * property) on a plain object found by following `path` (indexes into the child containers) as deep as possible.
+ */
+export function injectKey(root: unknown, path: readonly number[], key: string, payload: unknown): unknown {
+  const copy = structuredCloneLoose(root);
+  let current: unknown = copy;
+  for (const step of path) {
+    const children = (Array.isArray(current) ? current : isPlain(current) ? Object.values(current) : []).filter(
+      (c) => isPlain(c) || Array.isArray(c),
+    );
+    if (children.length === 0) break;
+    current = children[step % children.length];
+  }
+  const target = isPlain(current) ? current : isPlain(copy) ? copy : undefined;
+  if (target === undefined) return root;
+  Object.defineProperty(target, key, { value: payload, enumerable: true, configurable: true, writable: true });
+  return copy;
+}
+
+function structuredCloneLoose(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(structuredCloneLoose);
+  if (isPlain(value)) return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, structuredCloneLoose(v)]));
+  return value;
 }
