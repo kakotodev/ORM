@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { OrmError } from "../errors.js";
 import type { EnumField, FieldIR, ModelIndex, RelationField, ScalarField, ScalarType, SchemaIndex } from "../schema/ir.js";
 import type { Dialect } from "./dialect.js";
-import type { CompiledQuery, SelectQuery, SqlExpr, SqlQuery, SqlValue } from "./sql-ast.js";
+import type { CompiledQuery, ReturningColumn, SelectQuery, SqlExpr, SqlQuery, SqlValue } from "./sql-ast.js";
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_IDENTIFIER_LENGTH = 63;
@@ -73,9 +73,9 @@ class Compiler {
     return text === "" ? "" : ` WHERE ${text}`;
   }
 
-  returning(columns: readonly string[]): string {
+  returning(columns: readonly ReturningColumn[]): string {
     if (columns.length === 0) return "";
-    return ` RETURNING ${columns.map((c) => `${quoteIdentifier(c)} AS ${quoteIdentifier(c)}`).join(", ")}`;
+    return ` RETURNING ${columns.map((c) => `${quoteIdentifier(c.column)} AS ${quoteIdentifier(c.as)}`).join(", ")}`;
   }
 
   insert(q: Extract<SqlQuery, { kind: "insert" }>): string {

@@ -1,10 +1,10 @@
 import type { Dialect } from "../dialects/dialect.js";
-import type { SelectQuery, SqlExpr } from "../dialects/sql-ast.js";
+import type { DeleteQuery, InsertQuery, SelectQuery, SqlExpr, SqlValue, UpdateQuery } from "../dialects/sql-ast.js";
 import { OrmError } from "../errors.js";
 import type { FieldIR, ModelIndex, RelationField, SchemaIndex } from "../schema/ir.js";
 import { oppositeRelation } from "../schema/ir.js";
 import type { RuntimeLimits } from "./limits.js";
-import type { FilterNode, OrderByItem, ValidatedFind } from "./validation.js";
+import type { FilterNode, OrderByItem, ValidatedData, ValidatedFind } from "./validation.js";
 
 export interface BuildContext {
   index: SchemaIndex;
@@ -229,4 +229,135 @@ export function buildCount(ctx: BuildContext, model: string, args: ValidatedFind
 /** Applies count's `skip` then `take` window to the unbounded total returned by `buildCount`. */
 export function applyCountWindow(total: number, args: { take?: number; skip?: number }): number {
   return Math.max(0, Math.min(total - (args.skip ?? 0), args.take ?? Infinity));
+}
+
+// ------------------------------------------------------------------ writes
+
+/** Clock and id source injected by the client so builders stay deterministic. */
+export interface WriteEnv {
+  now: Date;
+  uuid(): string;
+}
+
+/** The value the runtime fills in when a field is not provided, or `undefined` when there is none. */
+function runtimeDefault(field: FieldIR, env: WriteEnv): unknown {
+  if (field.kind === "relation") return undefined;
+  if (field.kind === "scalar" && field.updatedAt) return env.now;
+  const d = field.default;
+  if (d === undefined) return undefined;
+  switch (d.kind) {
+    case "now":
+      return env.now;
+    case "uuid":
+      return env.uuid();
+    case "literal":
+      // Schema literals are plain numbers / strings; widen them to the field's runtime type.
+      if (field.kind === "scalar" && field.type === "BigInt" && typeof d.value === "number") return BigInt(d.value);
+      if (field.kind === "scalar" && field.type === "Decimal" && typeof d.value === "number") return String(d.value);
+      return d.value;
+    case "autoincrement":
+      return undefined;
+  }
+}
+
+function returningColumns(ctx: BuildContext, model: string, returning: readonly string[]): { column: string; as: string }[] {
+  return selectedColumns(ctx, model, returning);
+}
+
+function assertNoConnects(data: ValidatedData): void {
+  if (data.connects.size > 0) fail("Relation connects must be resolved before building a write");
+}
+
+/**
+ * All rows share one column list: schema field order, restricted to columns some row provides or that have a
+ * runtime default. A row that lacks an included column gets its runtime default, else NULL. `autoincrement`
+ * columns are omitted unless provided. `returning` lists FIELD names. Connects must already be resolved into
+ * foreign-key values (see `resolvedConnectColumns`).
+ */
+export function buildInsert(
+  ctx: BuildContext,
+  model: string,
+  rows: readonly ValidatedData[],
+  env: WriteEnv,
+  returning: readonly string[],
+): InsertQuery {
+  const target = modelOf(ctx, model);
+  for (const row of rows) assertNoConnects(row);
+  const fields: FieldIR[] = [];
+  for (const f of target.ir.fields) {
+    if (f.kind === "relation") continue;
+    const provided = rows.some((r) => r.values.has(f.name));
+    const autoincrement = f.kind === "scalar" && f.default?.kind === "autoincrement";
+    const filled = f.kind === "scalar" && f.updatedAt ? true : f.default !== undefined && !autoincrement;
+    if (provided || filled) fields.push(f);
+  }
+  const values: SqlValue[][] = rows.map((row) =>
+    fields.map((f) => {
+      const raw = row.values.has(f.name) ? row.values.get(f.name) : (runtimeDefault(f, env) ?? null);
+      return ctx.dialect.encode(f, raw);
+    }),
+  );
+  return {
+    kind: "insert",
+    table: target.ir.table,
+    columns: fields.map((f) => (f.kind === "relation" ? fail("Relation fields have no column") : f.column)),
+    rows: values,
+    returning: returningColumns(ctx, model, returning),
+  };
+}
+
+/** `where` undefined updates every row (updateMany with `{}`). `@updatedAt` is set to `env.now` unless provided. */
+export function buildUpdate(
+  ctx: BuildContext,
+  model: string,
+  where: FilterNode | undefined,
+  data: ValidatedData,
+  env: WriteEnv,
+  returning: readonly string[],
+): UpdateQuery {
+  const target = modelOf(ctx, model);
+  assertNoConnects(data);
+  const alias = ctx.nextAlias();
+  const set: UpdateQuery["set"] = [];
+  for (const [name, raw] of data.values) {
+    set.push({ column: columnOf(target, name), value: ctx.dialect.encode(fieldOf(target, name), raw) });
+  }
+  for (const f of target.ir.fields) {
+    if (f.kind === "scalar" && f.updatedAt && !data.values.has(f.name)) {
+      set.push({ column: f.column, value: ctx.dialect.encode(f, env.now) });
+    }
+  }
+  const query: UpdateQuery = { kind: "update", table: target.ir.table, alias, set, returning: returningColumns(ctx, model, returning) };
+  if (where !== undefined) query.where = buildFilter(ctx, model, alias, where);
+  return query;
+}
+
+/** `where` undefined deletes every row (deleteMany with `{}`). */
+export function buildDelete(
+  ctx: BuildContext,
+  model: string,
+  where: FilterNode | undefined,
+  returning: readonly string[],
+): DeleteQuery {
+  const target = modelOf(ctx, model);
+  const alias = ctx.nextAlias();
+  const query: DeleteQuery = { kind: "delete", table: target.ir.table, alias, returning: returningColumns(ctx, model, returning) };
+  if (where !== undefined) query.where = buildFilter(ctx, model, alias, where);
+  return query;
+}
+
+/**
+ * For each `connect` in `data`: relation name -> the target-unique filter, unchanged. The client looks the target
+ * row up with it and then sets `values[fk] = target[reference]` for every (fk, reference) pair of the relation
+ * before calling `buildInsert` / `buildUpdate`.
+ */
+export function resolvedConnectColumns(ctx: BuildContext, model: string, data: ValidatedData): Map<string, FilterNode> {
+  const target = modelOf(ctx, model);
+  const out = new Map<string, FilterNode>();
+  for (const [name, filter] of data.connects) {
+    const field = fieldOf(target, name);
+    if (field.kind !== "relation" || field.fields.length === 0) return fail("Cannot connect this relation");
+    out.set(name, filter);
+  }
+  return out;
 }

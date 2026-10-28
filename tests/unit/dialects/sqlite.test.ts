@@ -123,7 +123,10 @@ describe("sqlite compile", () => {
       table: "User",
       columns: ["email", "role", "createdAt"],
       rows: [["a@b.c", "USER", "2026-01-01"]],
-      returning: ["id", "email"],
+      returning: [
+        { column: "id", as: "id" },
+        { column: "email", as: "email" },
+      ],
     });
     expect(one.text).toBe(
       'INSERT INTO "User" ("email", "role", "createdAt") VALUES (?, ?, ?) RETURNING "id" AS "id", "email" AS "email"',
@@ -160,7 +163,7 @@ describe("sqlite compile", () => {
         { column: "updatedAt", value: "now" },
       ],
       where: eq("id", 1),
-      returning: ["id"],
+      returning: [{ column: "id", as: "id" }],
     });
     expect(u.text).toBe('UPDATE "Post" AS "t0" SET "title" = ?, "updatedAt" = ? WHERE "t0"."id" = ? RETURNING "id" AS "id"');
     expect(u.params).toEqual(["x", "now", 1]);

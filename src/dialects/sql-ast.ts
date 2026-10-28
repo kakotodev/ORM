@@ -25,12 +25,18 @@ export interface SelectQuery {
   offset?: number;
 }
 
+/** `column` is the database column, `as` the field name it is returned under. */
+export interface ReturningColumn {
+  column: string;
+  as: string;
+}
+
 export interface InsertQuery {
   kind: "insert";
   table: string;
   columns: string[];
   rows: SqlValue[][];
-  returning: string[];
+  returning: ReturningColumn[];
 }
 
 export interface UpdateQuery {
@@ -39,7 +45,7 @@ export interface UpdateQuery {
   alias: string;
   set: { column: string; value: SqlValue }[];
   where?: SqlExpr;
-  returning: string[];
+  returning: ReturningColumn[];
 }
 
 export interface DeleteQuery {
@@ -47,7 +53,7 @@ export interface DeleteQuery {
   table: string;
   alias: string;
   where?: SqlExpr;
-  returning: string[];
+  returning: ReturningColumn[];
 }
 
 export type SqlQuery = SelectQuery | InsertQuery | UpdateQuery | DeleteQuery;
