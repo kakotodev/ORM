@@ -13,7 +13,7 @@ import {
 import { createRuntimeClient } from "../../../src/runtime/client.js";
 import { loadSchema } from "../../../src/schema/index.js";
 import { createTestClient, type TestClient } from "../../helpers/db.js";
-import { BLOG_SCHEMA } from "../../helpers/schemas.js";
+import { BLOG_SCHEMA, RESTRICT_SCHEMA, SET_NULL_SCHEMA } from "../../helpers/schemas.js";
 
 async function seed(db: TestClient): Promise<{ id: number }> {
   const u = (await db.user.create({ data: { email: "a@b.c", name: "A" } })) as { id: number };
@@ -244,6 +244,59 @@ describe("runtime client", () => {
     expect(await db.post.count()).toBe(2);
     await db.user.delete({ where: { id: u.id } });
     expect(await db.post.count()).toBe(0);
+  });
+
+  it("maps a delete blocked by onDelete: Restrict to ForeignKeyError", async () => {
+    const db = await createTestClient(RESTRICT_SCHEMA);
+    const u = await seed(db);
+    await expect(db.user.delete({ where: { id: u.id } })).rejects.toBeInstanceOf(ForeignKeyError);
+    await expect(db.user.delete({ where: { id: u.id } })).rejects.toMatchObject({ code: "FOREIGN_KEY", model: "User" });
+    await expect(db.user.deleteMany({ where: {} })).rejects.toMatchObject({ code: "FOREIGN_KEY", model: "User" });
+    expect(await db.user.count()).toBe(1);
+    expect(await db.post.count()).toBe(2);
+  });
+
+  it("maps a Restrict violation inside $transaction to ForeignKeyError and rolls back", async () => {
+    const db = await createTestClient(RESTRICT_SCHEMA);
+    const u = await seed(db);
+    for (const run of [
+      (tx: TestClient) => tx.user.delete({ where: { id: u.id } }),
+      (tx: TestClient) => tx.user.deleteMany({ where: {} }),
+    ]) {
+      const err = await errorOf(
+        db.$transaction(async (raw) => {
+          const tx = raw as TestClient;
+          await tx.user.create({ data: { email: "inside" } });
+          return run(tx);
+        }),
+      );
+      expect(err).toBeInstanceOf(ForeignKeyError);
+      expect(err).toMatchObject({ model: "User" });
+      expect(err.debug).toBeUndefined();
+    }
+    expect(await db.user.count()).toBe(1);
+  });
+
+  it("propagates constraint errors raised through tx without debug data unless debug is on", async () => {
+    const quiet = await createTestClient();
+    await quiet.user.create({ data: { email: "dup" } });
+    const unique = await errorOf(quiet.$transaction((tx) => (tx as TestClient).user.create({ data: { email: "dup" } })));
+    expect(unique).toBeInstanceOf(UniqueConstraintError);
+    expect(unique.debug).toBeUndefined();
+    const fk = await errorOf(quiet.$transaction((tx) => (tx as TestClient).post.create({ data: { title: "t", authorId: 999 } })));
+    expect(fk).toBeInstanceOf(ForeignKeyError);
+    expect(fk.debug).toBeUndefined();
+    const loud = await createTestClient(undefined, { debug: true });
+    const loudFk = await errorOf(loud.$transaction((tx) => (tx as TestClient).post.create({ data: { title: "t", authorId: 999 } })));
+    expect(loudFk).toBeInstanceOf(ForeignKeyError);
+    expect(loudFk.debug?.sql).toContain("INSERT");
+  });
+
+  it("sets the foreign key to null on delete as declared with onDelete: SetNull", async () => {
+    const db = await createTestClient(SET_NULL_SCHEMA);
+    const u = await seed(db);
+    await db.user.delete({ where: { id: u.id } });
+    expect(await db.post.findMany({ select: { authorId: true } })).toEqual([{ authorId: null }, { authorId: null }]);
   });
 
   it("exposes frozen, prototype-free delegates whose methods work detached", async () => {

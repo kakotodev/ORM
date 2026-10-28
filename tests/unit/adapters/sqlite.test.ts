@@ -8,7 +8,7 @@ import { ConfigError, DatabaseError, TransactionError } from "../../../src/error
 import { Mutex } from "../../../src/runtime/mutex.js";
 import { loadSchema } from "../../../src/schema/index.js";
 import { indexSchema } from "../../../src/schema/ir.js";
-import { BLOG_SCHEMA } from "../../helpers/schemas.js";
+import { BLOG_SCHEMA, RESTRICT_SCHEMA } from "../../helpers/schemas.js";
 
 const TS = "2026-01-01T00:00:00.000Z";
 const insertUser = (email: string) => ({
@@ -179,6 +179,24 @@ describe("sqlite adapter", () => {
     await expect(a.transaction(() => Promise.resolve(1))).rejects.toBeInstanceOf(DatabaseError);
     await expect(a.executeScript(["SELECT 1"])).rejects.toBeInstanceOf(DatabaseError);
     await expect(a.close()).resolves.toBeUndefined();
+  });
+});
+
+describe("sqlite adapter with onDelete: Restrict", () => {
+  it("reports a delete of a referenced row as a foreign key violation", async () => {
+    const a = createSqliteAdapter({ url: "file::memory:" });
+    await a.executeScript(sqliteDialect.createTables(indexSchema(loadSchema(RESTRICT_SCHEMA))));
+    await a.execute(insertUser("r"));
+    await a.execute({
+      text: 'INSERT INTO "Post" ("title","authorId","published","views","updatedAt") VALUES (?,?,?,?,?)',
+      params: ["t", 1, 0, 0n, TS],
+    });
+    const del = { text: 'DELETE FROM "User" WHERE "id" = ?', params: [1] };
+    const err: unknown = await a.execute(del).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConstraintViolation);
+    expect(err).toMatchObject({ kind: "foreignKey", columns: [] });
+    expect((err as ConstraintViolation).query).toEqual(del);
+    await a.close();
   });
 });
 

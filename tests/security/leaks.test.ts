@@ -19,7 +19,7 @@ import { migrate } from "../../src/migrations/runner.js";
 import { createRuntimeClient } from "../../src/runtime/client.js";
 import { loadSchema } from "../../src/schema/index.js";
 import { createTestClient, type TestClient } from "../helpers/db.js";
-import { BLOG_SCHEMA } from "../helpers/schemas.js";
+import { BLOG_SCHEMA, RESTRICT_SCHEMA } from "../helpers/schemas.js";
 
 const SECRET = "top-secret-value";
 const schema = loadSchema(BLOG_SCHEMA);
@@ -111,6 +111,17 @@ const SCENARIOS: Scenario[] = [
     run: async (debug) => {
       const db = await createTestClient(undefined, { debug });
       return rejection(db.post.create({ data: { title: SECRET, authorId: 999 } }));
+    },
+  },
+  {
+    name: "foreign key violation on a delete blocked by onDelete: Restrict",
+    expected: ForeignKeyError,
+    sql: true,
+    run: async (debug) => {
+      const db = await createTestClient(RESTRICT_SCHEMA, { debug });
+      const u = (await db.user.create({ data: { email: SECRET } })) as { id: number };
+      await db.post.create({ data: { title: SECRET, authorId: u.id } });
+      return rejection(db.user.deleteMany({ where: { email: SECRET } }));
     },
   },
   {
@@ -210,10 +221,10 @@ describe.each(SCENARIOS)("$name", (scenario) => {
     it("exposes SQL only in err.debug when debug is on", async () => {
       const err = await scenario.run(true);
       expect(err).toBeInstanceOf(scenario.expected);
-      expect(err.debug?.sql).toMatch(/SELECT|INSERT/);
+      expect(err.debug?.sql).toMatch(/SELECT|INSERT|DELETE FROM/);
       // Still never in the message, JSON or default inspection.
       for (const view of [err.message, JSON.stringify(err), inspect(err)]) {
-        expect(view).not.toMatch(/SELECT|INSERT/);
+        expect(view).not.toMatch(/SELECT|INSERT|DELETE FROM/);
         expect(view).not.toContain(SECRET);
       }
     });

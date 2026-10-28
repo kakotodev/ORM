@@ -9,11 +9,15 @@ import { ConstraintViolation, type Adapter, type Queryable } from "./adapter.js"
 
 // node:sqlite errors carry `code: "ERR_SQLITE_ERROR"`, a numeric extended `errcode`
 // and a generic `errstr` ("constraint failed"); the detail is only in `message`.
-const SQLITE_CONSTRAINT_FOREIGNKEY = 787;
+// Foreign key failures come as SQLITE_CONSTRAINT_FOREIGNKEY (787) on insert/update, but as
+// SQLITE_CONSTRAINT_TRIGGER (1811) when a delete is blocked by ON DELETE RESTRICT, so they are
+// recognised by the primary code SQLITE_CONSTRAINT (19) plus the fixed SQLite message.
+const SQLITE_CONSTRAINT = 19;
 const SQLITE_CONSTRAINT_PRIMARYKEY = 1555;
 const SQLITE_CONSTRAINT_UNIQUE = 2067;
 
 const UNIQUE_PREFIX = "UNIQUE constraint failed: ";
+const FOREIGN_KEY_MESSAGE = "FOREIGN KEY constraint failed";
 
 function parseUnique(message: string): { table?: string; columns: string[] } {
   const at = message.indexOf(UNIQUE_PREFIX);
@@ -43,7 +47,7 @@ function mapError(err: unknown, q: CompiledQuery | undefined): Error {
     const { table, columns } = parseUnique(message);
     return new ConstraintViolation("unique", table, columns, q);
   }
-  if (code === SQLITE_CONSTRAINT_FOREIGNKEY) {
+  if (code !== undefined && (code & 0xff) === SQLITE_CONSTRAINT && message.includes(FOREIGN_KEY_MESSAGE)) {
     return new ConstraintViolation("foreignKey", undefined, [], q);
   }
   return new DatabaseError({
