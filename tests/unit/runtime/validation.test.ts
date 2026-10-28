@@ -371,6 +371,9 @@ describe("review fixes", () => {
       expect(() => resolveRuntimeLimits({ maxTake: bad as number })).toThrow(ConfigError);
     }
     expect(() => resolveRuntimeLimits({ maxBogus: 1 } as Partial<RuntimeLimits>)).toThrow(ConfigError);
+    for (const bad of [null, 5, "limits", true]) {
+      expect(() => resolveRuntimeLimits(bad as unknown as Partial<RuntimeLimits>)).toThrow(ConfigError);
+    }
     expect(DEFAULT_RUNTIME_LIMITS).toMatchObject({ maxWhereTerms: 5000, maxOrderBy: 16 });
   });
   it("caps where terms across the whole call", () => {

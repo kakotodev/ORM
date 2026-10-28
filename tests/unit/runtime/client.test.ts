@@ -167,12 +167,16 @@ describe("runtime client", () => {
 
   it("rolls back $transaction and keeps outside queries isolated", async () => {
     const db = await createTestClient();
+    let outside: Promise<unknown> | undefined;
     await expect(
       db.$transaction(async (tx) => {
         await (tx as TestClient).user.create({ data: { email: "t" } });
+        // An outside query is queued behind the transaction: it must not see the uncommitted row.
+        outside = db.user.findMany();
         throw new Error("x");
       }),
     ).rejects.toThrow("x");
+    expect(await outside).toEqual([]);
     expect(await db.user.count()).toBe(0);
   });
 
@@ -297,6 +301,29 @@ describe("runtime client", () => {
     const u = await seed(db);
     await db.user.delete({ where: { id: u.id } });
     expect(await db.post.findMany({ select: { authorId: true } })).toEqual([{ authorId: null }, { authorId: null }]);
+  });
+
+  it("excludes NULL rows alike with not, NOT and notIn", async () => {
+    const db = await createTestClient();
+    await db.user.createMany({ data: [{ email: "a", name: "A" }, { email: "b", name: "B" }, { email: "n" }] });
+    const emails = async (where: Record<string, unknown>) =>
+      ((await db.user.findMany({ where, orderBy: { email: "asc" }, select: { email: true } })) as { email: string }[]).map((u) => u.email);
+    expect(await emails({ name: { not: "A" } })).toEqual(["b"]);
+    expect(await emails({ NOT: { name: "A" } })).toEqual(["b"]);
+    expect(await emails({ name: { notIn: ["A"] } })).toEqual(["b"]);
+    expect(await emails({ OR: [{ name: { not: "A" } }, { name: null }] })).toEqual(["b", "n"]);
+  });
+
+  it("returns null from findFirst with take: 0", async () => {
+    const db = await createTestClient();
+    await db.user.create({ data: { email: "a" } });
+    expect(await db.user.findFirst({ take: 0 })).toBeNull();
+    expect(await db.user.findFirst({ take: 1 })).toMatchObject({ email: "a" });
+  });
+
+  it("rejects null limits with ConfigError", () => {
+    const schema = loadSchema(BLOG_SCHEMA);
+    expect(() => createRuntimeClient(schema, { url: "file::memory:", limits: null as unknown as undefined })).toThrow(ConfigError);
   });
 
   it("exposes frozen, prototype-free delegates whose methods work detached", async () => {

@@ -72,8 +72,10 @@ describe("read query builder", () => {
     expect(applyCountWindow(10, {})).toBe(10);
   });
 
-  it("treats not on a nullable column like Prisma", () => {
-    expect(compileFind("User", { where: { name: { not: "A" } } }, "many").text).toContain('("t0"."name" <> ? OR "t0"."name" IS NULL)');
+  it("renders not on a nullable column as a plain <> (NULL rows excluded, like NOT and notIn)", () => {
+    const text = compileFind("User", { where: { name: { not: "A" } } }, "many").text;
+    expect(text).toContain('WHERE "t0"."name" <> ?');
+    expect(text).not.toContain("IS NULL");
     expect(compileFind("User", { where: { email: { not: "A" } } }, "many").text).toContain('"t0"."email" <> ?');
   });
 

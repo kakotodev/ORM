@@ -60,12 +60,11 @@ function scalarFilter(ctx: BuildContext, alias: string, field: FieldIR, op: stri
       return raw === null
         ? { kind: "isNull", expr: left, negated: false }
         : { kind: "compare", op: "=", left, right: param(ctx, field, raw) };
-    case "not": {
-      if (raw === null) return { kind: "isNull", expr: left, negated: true };
-      const differs: SqlExpr = { kind: "compare", op: "<>", left, right: param(ctx, field, raw) };
-      // SQL <> drops NULL rows; Prisma's `not` keeps them.
-      return field.nullable ? { kind: "or", items: [differs, { kind: "isNull", expr: left, negated: false }] } : differs;
-    }
+    case "not":
+      // Plain `<>`: NULL rows are excluded, as with `NOT { field: v }` and `notIn` (and Prisma's SQL).
+      return raw === null
+        ? { kind: "isNull", expr: left, negated: true }
+        : { kind: "compare", op: "<>", left, right: param(ctx, field, raw) };
     case "in":
     case "notIn": {
       if (!Array.isArray(raw)) return fail("Expected a list of values");
@@ -210,8 +209,11 @@ export function buildFind(
   };
   const where = own(args, "where");
   if (where !== undefined) query.where = buildFilter(ctx, model, alias, where);
-  // Unbounded reads fetch one row past maxRows so the client can detect the overflow.
-  query.limit = mode === "many" ? (own(args, "take") ?? ctx.limits.maxRows + 1) : 1;
+  // Unbounded reads fetch one row past maxRows so the client can detect the overflow. findFirst reads at most
+  // one row, none with `take: 0`.
+  const take = own(args, "take");
+  if (mode === "many") query.limit = take ?? ctx.limits.maxRows + 1;
+  else query.limit = mode === "first" && take !== undefined ? Math.min(take, 1) : 1;
   const skip = own(args, "skip");
   if (skip !== undefined) query.offset = skip;
   return query;

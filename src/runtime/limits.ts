@@ -30,9 +30,10 @@ export const DEFAULT_RUNTIME_LIMITS: Readonly<RuntimeLimits> = Object.freeze({
  * Merges partial overrides onto the defaults. `undefined` entries are ignored; any other value must be a
  * positive safe integer, so a NaN, negative or non-numeric override can never disable a limit.
  */
-export function resolveRuntimeLimits(overrides?: Partial<RuntimeLimits>): RuntimeLimits {
+export function resolveRuntimeLimits(overrides?: Partial<RuntimeLimits> | null): RuntimeLimits {
   const resolved: RuntimeLimits = { ...DEFAULT_RUNTIME_LIMITS };
   if (overrides === undefined) return resolved;
+  if (typeof (overrides as unknown) !== "object" || overrides === null) throw new ConfigError("Runtime limits must be an object");
   const known = new Set<string>(Object.keys(DEFAULT_RUNTIME_LIMITS));
   for (const key of Object.keys(overrides)) {
     if (!known.has(key)) throw new ConfigError("Unknown runtime limit option");

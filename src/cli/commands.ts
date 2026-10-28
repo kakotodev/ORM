@@ -86,14 +86,15 @@ function generate(values: Values, io: CliIO): void {
 }
 
 function report(result: MigrateResult, io: CliIO): void {
-  if (result.applied.length > 0) io.stdout(`applied ${result.applied.join(", ")}`);
   if (result.created !== null) io.stdout(`created ${result.created}`);
+  if (result.applied.length > 0) io.stdout(`applied ${result.applied.join(", ")}`);
   if (result.upToDate) io.stdout("database is up to date");
 }
 
 async function migrateCommand(values: Values, reset: boolean, io: CliIO): Promise<void> {
   if (reset && values.force !== true) throw new ConfigError("Refusing to reset without --force");
   const schema = readSchema(values, io);
+  if (schema.provider !== "sqlite") throw new ConfigError(`Provider ${schema.provider} is not supported yet`);
   const url = Object.hasOwn(io.env, schema.urlEnv) ? io.env[schema.urlEnv] : undefined;
   if (url === undefined || url === "") throw new ConfigError(`Missing database URL (set ${safePath(schema.urlEnv)})`);
   const dir = resolve(io.cwd, text(values, "dir", "./migrations"));

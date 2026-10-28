@@ -67,11 +67,20 @@ describe("mini-orm CLI", () => {
     io.env["DATABASE_URL"] = `file:${join(tmp, "dev.db")}`;
     expect(await run(["migrate", "--schema", schemaPath, "--dir", "migrations"], io)).toBe(0);
     expect(all()).not.toContain("dev.db");
-    expect(all()).toMatch(/created \d{14}_init/);
+    expect(io.out).toEqual([expect.stringMatching(/^created \d{14}_init$/), expect.stringMatching(/^applied \d{14}_init$/)]);
     expect(readdirSync(join(tmp, "migrations")).length).toBeGreaterThan(0);
     io.out.length = 0;
     expect(await run(["migrate", "--schema", schemaPath, "--dir", "migrations"], io)).toBe(0);
     expect(io.out.join("\n")).toContain("database is up to date");
+  });
+
+  it("refuses a provider that is not supported yet", async () => {
+    writeFileSync(schemaPath, SCHEMA.replace('"sqlite"', '"postgresql"'));
+    io.env["DATABASE_URL"] = `file:${join(tmp, "dev.db")}`;
+    expect(await run(["migrate", "--schema", schemaPath, "--dir", "migrations"], io)).toBe(1);
+    expect(io.err[0]).toBe("error: Provider postgresql is not supported yet");
+    expect(existsSync(join(tmp, "migrations"))).toBe(false);
+    expect(existsSync(join(tmp, "dev.db"))).toBe(false);
   });
 
   it("fails when the URL variable is not set", async () => {
