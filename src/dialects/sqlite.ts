@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { OrmError } from "../errors.js";
 import type { EnumField, FieldIR, ModelIndex, RelationField, ScalarField, ScalarType, SchemaIndex } from "../schema/ir.js";
 import type { Dialect } from "./dialect.js";
@@ -135,8 +136,10 @@ class Compiler {
         const joined = e.items.map((i) => this.expr(i, true)).join(e.kind === "and" ? " AND " : " OR ");
         return nested ? `(${joined})` : joined;
       }
-      case "not":
-        return `NOT (${this.expr(e.expr, false)})`;
+      case "not": {
+        const inner = this.expr(e.expr, false); // "" is an empty top-level AND, i.e. true
+        return `NOT (${inner === "" ? "1" : inner})`;
+      }
       case "exists":
         return `${e.negated ? "NOT " : ""}EXISTS (${this.select(e.query)})`;
       case "true":
@@ -179,7 +182,7 @@ function encode(field: FieldIR, value: unknown): SqlValue {
   if (field.kind === "enum") return typeof value === "string" ? value : wrongType();
   switch (field.type) {
     case "Int":
-      return typeof value === "number" && Number.isInteger(value) ? value : wrongType();
+      return typeof value === "number" && Number.isSafeInteger(value) ? value : wrongType();
     case "Float":
       return typeof value === "number" && Number.isFinite(value) ? value : wrongType();
     case "BigInt":
@@ -192,7 +195,12 @@ function encode(field: FieldIR, value: unknown): SqlValue {
     case "DateTime":
       return value instanceof Date && !Number.isNaN(value.getTime()) ? value.toISOString() : wrongType();
     case "Json": {
-      const text: unknown = JSON.stringify(value);
+      let text: unknown;
+      try {
+        text = JSON.stringify(value);
+      } catch {
+        return wrongType(); // bigint or circular data; never surface the native message
+      }
       return typeof text === "string" ? text : wrongType();
     }
     case "Bytes":
@@ -207,7 +215,7 @@ function badStored(): never {
 function decodeScalar(type: ScalarType, raw: unknown): unknown {
   switch (type) {
     case "Int":
-      if (typeof raw === "number") return raw;
+      if (typeof raw === "number") return Number.isSafeInteger(raw) ? raw : badStored();
       return typeof raw === "bigint" && raw >= BigInt(Number.MIN_SAFE_INTEGER) && raw <= BigInt(Number.MAX_SAFE_INTEGER)
         ? Number(raw)
         : badStored();
@@ -216,7 +224,7 @@ function decodeScalar(type: ScalarType, raw: unknown): unknown {
       return typeof raw === "bigint" ? Number(raw) : badStored();
     case "BigInt":
       if (typeof raw === "bigint") return raw;
-      return typeof raw === "number" && Number.isInteger(raw) ? BigInt(raw) : badStored();
+      return typeof raw === "number" && Number.isSafeInteger(raw) ? BigInt(raw) : badStored();
     case "Decimal":
     case "String":
       return typeof raw === "string" ? raw : badStored();
@@ -303,10 +311,31 @@ function ownedRelations(model: ModelIndex): RelationField[] {
   return out;
 }
 
-function createTable(model: ModelIndex, index: SchemaIndex): string[] {
+function isInlineUnique(model: ModelIndex, name: string): boolean {
+  const f = model.fields.get(name);
+  return f !== undefined && f.kind !== "relation" && f.isUnique && name !== model.ir.primaryKey;
+}
+
+/** Natural name when it fits and is free; otherwise a truncated prefix plus a hash of table and columns. */
+function indexName(table: string, columns: readonly string[], used: Set<string>): string {
+  let name = `${table}_${columns.join("_")}_idx`;
+  if (name.length > MAX_IDENTIFIER_LENGTH || used.has(name)) {
+    const hash = createHash("sha256").update(JSON.stringify([table, columns])).digest("hex").slice(0, 8);
+    name = `${name.slice(0, MAX_IDENTIFIER_LENGTH - 9)}_${hash}`;
+  }
+  used.add(name);
+  return name;
+}
+
+function createTable(model: ModelIndex, index: SchemaIndex, usedIndexNames: Set<string>): string[] {
   const lines: string[] = [];
   for (const f of model.ir.fields) if (f.kind !== "relation") lines.push(columnDefinition(model, f, index));
-  for (const u of model.ir.uniques) if (u.length > 1) lines.push(`UNIQUE (${columnsOf(model, u)})`);
+  for (const u of model.ir.uniques) {
+    // A lone field already rendered with an inline UNIQUE needs no second constraint.
+    const [only] = u;
+    const inline = u.length === 1 && only !== undefined && model.fields.get(only)?.kind !== "relation" && isInlineUnique(model, only);
+    if (!inline) lines.push(`UNIQUE (${columnsOf(model, u)})`);
+  }
   for (const rel of ownedRelations(model)) {
     const target = index.models.get(rel.target);
     if (target === undefined) return fail("Unknown relation target in schema");
@@ -320,8 +349,8 @@ function createTable(model: ModelIndex, index: SchemaIndex): string[] {
       const f = model.fields.get(n);
       return f === undefined || f.kind === "relation" ? fail("Unknown column in schema") : f.column;
     });
-    const indexName = quoteIdentifier(`${model.ir.table}_${names.join("_")}_idx`);
-    statements.push(`CREATE INDEX IF NOT EXISTS ${indexName} ON ${quoteIdentifier(model.ir.table)} (${columnsOf(model, cols)})`);
+    const quotedName = quoteIdentifier(indexName(model.ir.table, names, usedIndexNames));
+    statements.push(`CREATE INDEX IF NOT EXISTS ${quotedName} ON ${quoteIdentifier(model.ir.table)} (${columnsOf(model, cols)})`);
   }
   return statements;
 }
@@ -359,7 +388,8 @@ function createTables(index: SchemaIndex, models?: readonly string[]): string[] 
       selected.push(entry);
     }
   }
-  return sortByDependency(selected).flatMap((m) => createTable(m, index));
+  const used = new Set<string>();
+  return sortByDependency(selected).flatMap((m) => createTable(m, index, used));
 }
 
 function dropTables(tables: readonly string[]): string[] {

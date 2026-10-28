@@ -208,6 +208,7 @@ describe("sqlite compile", () => {
     expect(whereOf({ kind: "not", expr: { kind: "or", items: [eq("a", 1), eq("b", 2)] } })).toContain(
       'WHERE NOT ("t0"."a" = ? OR "t0"."b" = ?)',
     );
+    expect(whereOf({ kind: "not", expr: { kind: "and", items: [] } })).toContain("WHERE NOT (1)");
     expect(whereOf({ kind: "isNull", expr: col("name"), negated: true })).toContain('"t0"."name" IS NOT NULL');
     const empty = sqliteDialect.compile(sel({ kind: "in", expr: col("id"), values: [], negated: false }));
     expect(empty.text).toContain("WHERE 0");
@@ -317,6 +318,34 @@ describe("sqlite DDL", () => {
     expect(sql).toContain("ON DELETE SET NULL");
   });
 
+  it("emits UNIQUE for a single-column @@unique", () => {
+    const schema = indexSchema(loadSchema(minimalSchema("model A { id Int @id\n k String\n @@unique([k]) }")));
+    expect(sqliteDialect.createTables(schema).join("\n")).toContain('UNIQUE ("k")');
+  });
+
+  it("keeps index names within 63 chars and collision-free", () => {
+    const long = indexSchema(
+      loadSchema(
+        minimalSchema(
+          "model OrganizationMembership { id Int @id\n organizationIdentifier Int\n invitedByUserIdentifier Int\n @@index([organizationIdentifier, invitedByUserIdentifier]) }",
+        ),
+      ),
+    );
+    const longSql = sqliteDialect.createTables(long).find((s) => s.startsWith("CREATE INDEX")) ?? "";
+    const longName = /INDEX IF NOT EXISTS "([^"]+)"/.exec(longSql)?.[1] ?? "";
+    expect(longName.length).toBeLessThanOrEqual(63);
+    expect(longName).toMatch(/_[0-9a-f]{8}$/);
+    const clash = indexSchema(
+      loadSchema(minimalSchema("model T { id Int @id\n a_b Int\n a Int\n b Int\n @@index([a_b])\n @@index([a, b]) }")),
+    );
+    const names = sqliteDialect
+      .createTables(clash)
+      .filter((s) => s.startsWith("CREATE INDEX"))
+      .map((s) => /INDEX IF NOT EXISTS "([^"]+)"/.exec(s)?.[1]);
+    expect(names).toHaveLength(2);
+    expect(new Set(names).size).toBe(2);
+  });
+
   it("generates drops", () => {
     expect(sqliteDialect.dropTables(["Post", "User"])).toEqual(['DROP TABLE IF EXISTS "Post"', 'DROP TABLE IF EXISTS "User"']);
     expect(() => sqliteDialect.dropTables(["a;b"])).toThrow(OrmError);
@@ -361,6 +390,19 @@ describe("sqlite codec", () => {
     expect(() => sqliteDialect.encode(field("DateTime"), "2026")).toThrow(OrmError);
     expect(() => sqliteDialect.encode(field("Int"), "1")).toThrow(OrmError);
     expect(() => sqliteDialect.encode(field("DateTime"), new Date(Number.NaN))).toThrow(OrmError);
+    expect(() => sqliteDialect.encode(field("Json"), { n: 1n })).toThrow(OrmError);
+    const circular: Record<string, unknown> = {};
+    circular["secretKey"] = circular;
+    try {
+      sqliteDialect.encode(field("Json"), circular);
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(OrmError);
+      expect((e as Error).message).not.toContain("secretKey");
+    }
+    expect(() => sqliteDialect.encode(field("Int"), 2 ** 60)).toThrow(OrmError);
+    expect(() => sqliteDialect.decode(field("Int"), 1.5)).toThrow(OrmError);
+    expect(() => sqliteDialect.decode(field("BigInt"), 2 ** 60)).toThrow(OrmError);
     expect(() => sqliteDialect.decode(field("Json"), "{bad")).toThrow(OrmError);
     expect(() => sqliteDialect.decode(field("DateTime"), "nope")).toThrow(OrmError);
     const rel: FieldIR = { kind: "relation", name: "r", target: "T", list: false, nullable: false, fields: [], references: [], onDelete: "Restrict" };
