@@ -24,6 +24,17 @@ export default tseslint.config(
     },
   },
   {
+    // Paths in the CLI, the migration files layer, scripts and tests come from flags or temp dirs by design.
+    files: ["src/cli/**", "src/migrations/**", "scripts/**", "tests/**"],
+    rules: { "security/detect-non-literal-fs-filename": "off" },
+  },
+  {
+    // The example imports a generated client that is absent on a clean checkout; it is type-checked
+    // by examples/tsconfig.json after generation (npm run example), not by the type-aware lint.
+    files: ["examples/**/*.ts"],
+    ...tseslint.configs.disableTypeChecked,
+  },
+  {
     files: ["**/*.js"],
     ...tseslint.configs.disableTypeChecked,
   },

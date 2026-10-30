@@ -27,7 +27,10 @@
     "test:unit": "vitest run tests/unit tests/security tests/fuzz",
     "test:integration": "vitest run tests/integration",
     "test:types": "vitest run --typecheck.only --passWithNoTests",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "fixtures:update": "tsx scripts/update-fixtures.ts",
+    "example:setup": "npm run build && node dist/cli/index.js generate --schema examples/blog/schema.orm --out examples/blog/generated && node dist/cli/index.js migrate --schema examples/blog/schema.orm --dir examples/blog/migrations",
+    "example": "npm run example:setup && tsc -p examples/tsconfig.json && tsx examples/blog/index.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

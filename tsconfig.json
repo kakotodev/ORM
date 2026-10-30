@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src", "tests", "scripts", "examples", "vitest.config.ts", "eslint.config.js"]
+  "include": ["src", "tests", "scripts", "vitest.config.ts", "eslint.config.js"]
 }

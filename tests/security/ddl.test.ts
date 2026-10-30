@@ -1,0 +1,109 @@
+import type { SelectQuery } from "../../src/dialects/sql-ast.js";
+import { createSqliteAdapter } from "../../src/adapters/sqlite.js";
+import { sqliteDialect } from "../../src/dialects/sqlite.js";
+import { SchemaError } from "../../src/errors.js";
+import { createRuntimeClient, type RuntimeDelegate } from "../../src/runtime/client.js";
+import { loadSchema } from "../../src/schema/index.js";
+import { indexSchema } from "../../src/schema/ir.js";
+import { minimalSchema } from "../helpers/schemas.js";
+import { INJECTION_PAYLOADS } from "./corpus.js";
+
+const DDL_PAYLOAD = "x'); DROP TABLE A; --";
+
+/** Schema source with `value` as a string literal default (the schema lexer uses JSON-style escapes). */
+function schemaWithDefault(value: string): string {
+  return minimalSchema(`model A {\n  id Int @id\n  s String @default(${JSON.stringify(value)})\n}\n\nmodel B {\n  id Int @id\n}`);
+}
+
+async function open(source: string) {
+  const schema = loadSchema(source);
+  const adapter = createSqliteAdapter({ url: "file::memory:" });
+  await adapter.executeScript(sqliteDialect.createTables(indexSchema(schema)));
+  return { schema, adapter };
+}
+
+describe("literal defaults in generated DDL", () => {
+  it("keeps a hostile default as an inert string (the issue's example)", async () => {
+    const { schema, adapter } = await open(
+      minimalSchema('model A {\n  id Int @id\n  s String @default("x\'); DROP TABLE A; --")\n}\n\nmodel B {\n  id Int @id\n}'),
+    );
+    const tables = await adapter.query({ text: "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name", params: [] });
+    expect(tables.map((r) => r["name"])).toEqual(["A", "B"]);
+    const a = createRuntimeClient(schema, { adapter }) as unknown as Record<"a", RuntimeDelegate>;
+    await a.a.create({ data: { id: 1 } });
+    expect(await a.a.findFirst({ where: { id: 1 } })).toEqual({ id: 1, s: DDL_PAYLOAD });
+    await adapter.close();
+  });
+
+  it("stores the exact default text in the table definition", async () => {
+    const { adapter } = await open(schemaWithDefault(DDL_PAYLOAD));
+    const info = await adapter.query({ text: 'PRAGMA table_info("A")', params: [] });
+    const column = info.find((r) => r["name"] === "s");
+    expect(column?.["dflt_value"]).toBe(`'x''); DROP TABLE A; --'`);
+    await adapter.close();
+  });
+
+  const usable = INJECTION_PAYLOADS.filter((p) => p.length < 1000);
+  it.each(usable.map((p, i) => [i, p] as const))("round-trips corpus payload %#", async (_i, payload) => {
+    const { schema, adapter } = await open(schemaWithDefault(payload));
+    const tables = await adapter.query({ text: "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name", params: [] });
+    expect(tables.map((r) => r["name"])).toEqual(["A", "B"]);
+    const db = createRuntimeClient(schema, { adapter }) as unknown as Record<"a", RuntimeDelegate>;
+    await db.a.create({ data: { id: 1 } });
+    expect(await db.a.findFirst({ select: { s: true } })).toEqual({ s: payload });
+    await adapter.close();
+  });
+
+  it("rejects defaults that cannot be emitted safely", () => {
+    expect(() => loadSchema(schemaWithDefault("a\0b"))).toThrow(SchemaError);
+    expect(() => loadSchema(schemaWithDefault("'".repeat(10_000)))).toThrow(SchemaError);
+  });
+
+  it("emits enum CHECK values from the schema only, quoted", () => {
+    const schema = loadSchema(
+      minimalSchema("enum E {\n  A\n  B\n}\n\nmodel M {\n  id Int @id\n  e E @default(A)\n}"),
+    );
+    const ddl = sqliteDialect.createTables(indexSchema(schema)).join("\n");
+    expect(ddl).toContain(`CHECK ("e" IN ('A', 'B'))`);
+  });
+});
+
+describe("dialect last line of defence (even if validation were bypassed)", () => {
+  const base: SelectQuery = {
+    kind: "select",
+    table: "User",
+    alias: "t0",
+    columns: [{ column: "id", as: "id" }],
+    orderBy: [],
+  };
+  const compile = (query: unknown): string => sqliteDialect.compile(query as SelectQuery).text;
+
+  it("re-derives the sort direction from a literal", () => {
+    const text = compile({ ...base, orderBy: [{ column: "id", direction: "DESC; DROP TABLE User" }] });
+    expect(text).toContain('ORDER BY "t0"."id" ASC');
+    expect(text).not.toContain("DROP");
+  });
+
+  it("rejects identifiers that are not plain identifiers", () => {
+    for (const bad of ['id"; DROP TABLE "User"; --', "a b", "1a", "", "__x\0"]) {
+      expect(() => compile({ ...base, table: bad })).toThrow();
+      expect(() => compile({ ...base, columns: [{ column: bad, as: "x" }] })).toThrow();
+      expect(() => compile({ ...base, orderBy: [{ column: bad, direction: "ASC" }] })).toThrow();
+    }
+  });
+
+  it("rejects comparison operators outside the allow-list", () => {
+    const where = {
+      kind: "compare",
+      op: "= 1 OR 1=1 --",
+      left: { kind: "column", alias: "t0", column: "id" },
+      right: { kind: "param", value: 1 },
+    };
+    expect(() => compile({ ...base, where })).toThrow();
+  });
+
+  it("escapes quotes in identifiers and literals", () => {
+    expect(sqliteDialect.quoteLiteral("it's")).toBe("'it''s'");
+    expect(() => sqliteDialect.quoteLiteral("a\0b")).toThrow();
+  });
+});

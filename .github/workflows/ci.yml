@@ -3,6 +3,9 @@ name: CI
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly run so `npm audit` catches newly published advisories without a push.
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -44,6 +47,17 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:unit
+      - name: Coverage
+        if: matrix.node == 22
+        run: npm run coverage
+      - name: Upload coverage
+        if: matrix.node == 22
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: coverage/
+          if-no-files-found: error
+          retention-days: 14
 
   audit:
     runs-on: ubuntu-latest
@@ -58,3 +72,20 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm audit --audit-level=high
+
+  integration-sqlite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: file:./examples/blog/dev.db
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
+      - run: npm run example
